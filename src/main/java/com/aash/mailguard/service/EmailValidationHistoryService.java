@@ -5,7 +5,6 @@ import com.aash.mailguard.dto.EmailValidationRequest;
 import com.aash.mailguard.dto.EmailValidationResponse;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
-import com.aash.mailguard.util.EmailUtil;
 import com.aash.mailguard.validator.EmailFormatValidator;
 import org.springframework.stereotype.Service;
 
@@ -16,18 +15,15 @@ public class EmailValidationHistoryService {
     private final EmailValidationHistoryRepository repository;
     private final EmailFormatValidator validator;
     private final DnsLookupService dnsLookup;
-    private final EmailUtil util;
 
     public EmailValidationHistoryService(
             EmailValidationHistoryRepository repository,
             EmailFormatValidator validator,
-            DnsLookupService dnsLookup,
-            EmailUtil util) {
+            DnsLookupService dnsLookup) {
 
         this.repository = repository;
         this.validator=validator;
         this.dnsLookup=dnsLookup;
-        this.util=util;
     }
     public EmailValidationResponse validate(EmailValidationRequest request) {
 
@@ -37,10 +33,10 @@ public class EmailValidationHistoryService {
         response.setEmail(email);
 
 
-        boolean formatValid = validator.isFormatValid(email);
-        response.setFormatValid(formatValid);
+        EmailFormatValidator.Result syntax = validator.validate(email);
+        response.setFormatValid(syntax.valid());
 
-        if (!formatValid){
+        if (!syntax.valid()){
             response.setStatus("INVALID");
             response.setMessage("Invalid email format");
             saveHistory(response);
@@ -48,11 +44,10 @@ public class EmailValidationHistoryService {
         }
 
 
-        String domain= util.extractDomain(email);
-        response.setDomain(domain);
+        response.setDomain(syntax.domain());
 
 
-        Boolean mxFound = dnsLookup.hasMxRecord(domain);
+        Boolean mxFound = dnsLookup.hasMxRecord(syntax.domain());
         response.setMxRecordFound(mxFound);
         response.setStatus("UNVERIFIED");
         if (Boolean.TRUE.equals(mxFound)) {

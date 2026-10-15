@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: Phase 1 in progress: Java 21 build, passive single-address verification and generic error handling are tested. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
+Status: PR #1 safe baseline merged into main; Step 2 email syntax engine is implemented and locally verified on `feature/email-syntax-engine`, with PR #2 publication authorized but no merge approved. This syntax milestone is separate from Phase 2's unimplemented PostgreSQL/worker core. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
 
 ## Goals and current scope
 
@@ -73,6 +73,8 @@ The agreed sequence does not fix CSV limits, normalization, reason-code taxonomy
 | 3: bounded bulk intelligence | CSV ingestion/export, DNS/cache, authorized historical evidence, bounded concurrency, Valkey rate limiting | Deterministic 15,000-row fixture imports with duplicate/rejected-row accounting, resumable jobs and ordered exports; DNS is injectable and offline; cache outages and bounded load are demonstrated. |
 | 4: optional SMTP | Policy-gated conservative verification, only if approved | Disabled by default; explicit operator policy, egress controls, no automatic mail sending; tests use local fake SMTP only, never external servers; uncertainty remains visible. |
 | 5: local product | React/Vite UI, Compose, CI, telemetry and operations | Local stack starts without cloud services; API/worker/UI import-progress-results-export path smoke-tested; CI exercises offline units and PostgreSQL/Valkey integration; dashboards avoid address-level PII. |
+
+The approved Step 2 email syntax engine (D-021) is a focused milestone before the durable-core Phase 2 above. It changes syntax classification and domain normalization without adding the worker, PostgreSQL, CSV processing, or SMTP behavior.
 
 ## Testing strategy
 
