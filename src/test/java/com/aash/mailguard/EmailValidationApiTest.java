@@ -82,6 +82,24 @@ class EmailValidationApiTest {
     }
 
     @Test
+    void whitespaceInAddressKeepsInvalidResponseContract() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"user name@example.test\"}"))
+                .build();
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            assertTrue(response.body().contains("\"status\":\"INVALID\""));
+            assertTrue(response.body().contains("\"formatValid\":false"));
+        }
+        assertEquals(1, repository.count());
+        assertFalse(repository.findAll().getFirst().getFormatValid());
+        verifyNoInteractions(dnsLookup);
+    }
+
+    @Test
     void absentMxIsUnverifiedRatherThanInvalid() throws Exception {
         when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))

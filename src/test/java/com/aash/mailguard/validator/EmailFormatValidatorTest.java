@@ -13,4 +13,11 @@ class EmailFormatValidatorTest {
     void rejectsControlCharacters(String email) {
         assertFalse(validator.isFormatValid(email));
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"user name@example.test", "user@exa mple.test",
+            "user\u00a0name@example.test", "user@\u2003example.test"})
+    void rejectsUnsupportedWhitespace(String email) {
+        assertFalse(validator.isFormatValid(email));
+    }
 }

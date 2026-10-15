@@ -9,8 +9,10 @@ public class EmailFormatValidator {
         if (email == null || email.isBlank()) {
             return false;
         }
+        // shortcut: quoted local-part whitespace is unsupported, revisit with the Step 2 syntax parser.
         for (int i = 0; i < email.length(); i++) {
-            if (Character.isISOControl(email.charAt(i))) {
+            char c = email.charAt(i);
+            if (Character.isISOControl(c) || Character.isWhitespace(c) || Character.isSpaceChar(c)) {
                 return false;
             }
         }
