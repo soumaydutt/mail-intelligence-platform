@@ -3,12 +3,13 @@
 These are architecture records, not claims of implementation. **Accepted** means agreed direction; **proposed** needs approval; **provisional** means a repository-audit or implementation detail still needs verification. Future changes should add a new numbered decision or explicitly supersede an earlier ID, with evidence. See [PLAN.md](PLAN.md) and [PROGRESS.md](PROGRESS.md).
 
 ## D-001 — Java 21 and Spring Boot backend
-Status: **Accepted direction; provisional dependency compatibility** until a Java 21 API startup and OpenAPI smoke test.
+Status: **Accepted direction; Java 21 API/OpenAPI verified with test-scope H2**, production MySQL and Docker image unverified.
 Decision: Align compiler, runtime, CI, and containers on Java 21; retain Spring Boot with a compatible dependency set.
 Rationale: One supported baseline limits environment drift while retaining the existing Java ecosystem.
 Alternatives: Keep Java 17/23 as currently documented or replace Spring Boot.
-Trade-offs/consequences: Upgrade/build and dependency compatibility work; pin and test Boot/OpenAPI choices rather than assuming their pairing runs.
+Trade-offs/consequences: Pin Spring Boot 4.1.0 with springdoc 3.1.1; test-scope H2 isolates HTTP/startup tests but does not prove MySQL compatibility or container startup.
 Audit evidence: `pom.xml:8,29-30` selects Spring Boot 4.1.0 and Java 17; `Dockerfile:1` and README select Java 23. The sole context test fails at datasource setup, so it does not establish API or springdoc runtime compatibility.
+Implementation evidence (2026-10-15): `pom.xml` compiles for Java 21; `Dockerfile` selects Temurin 21. `mvn -B test` passed two offline HTTP tests. The app started on Java 21 with test-scope H2; live `/api/email/validate` (malformed input), `/v3/api-docs`, and Swagger UI returned HTTP 200. Docker and production database were not tested.
 
 ## D-002 — React, TypeScript, and Vite client
 Status: **Accepted direction**; scope of initial UI is provisional.
@@ -55,20 +56,20 @@ Alternatives: Unbounded virtual threads, fixed platform-thread pool, or reactive
 Trade-offs/consequences: Virtual threads reduce thread overhead, not downstream saturation; define per-stage limits, queue backpressure, and metrics before increasing throughput.
 
 ## D-008 — Evidence-based verification pipeline
-Status: **Accepted stage sequence; provisional result taxonomy and API compatibility** until a consumer contract is agreed.
+Status: **Interim single-address semantics approved and implemented in D-018; richer evidence taxonomy remains provisional**.
 Decision: Record local syntax, then DNS/MX where meaningful, then authorized historical evidence as separate observations with provenance/time and explicit absent/unknown/transient states. Optional SMTP evidence requires separate policy and does not prove delivery.
 Rationale: A boolean obscures missing data and network uncertainty.
 Alternatives: Single valid/invalid result or SMTP as final authority.
 Trade-offs/consequences: Richer API and persistence model; client must display uncertainty; existing response/history compatibility requires deliberate migration.
-Audit evidence: `EmailValidationResponse.java` exposes nullable Boolean checks plus status/message; `EmailValidationHistoryService.java:58-95` marks no MX `INVALID`, SMTP success `VALID`, SMTP failure `UNVERIFIED`, and overwrites its final message. `DnsLookupService.java` queries MX twice and does not distinguish all transient failures. Decide whether `/api/email/validate` changes in place or receives a versioned replacement.
+Audit evidence (before D-018): `EmailValidationResponse.java` exposes nullable Boolean checks plus status/message; `EmailValidationHistoryService.java:58-95` marked no MX `INVALID`, SMTP success `VALID`, SMTP failure `UNVERIFIED`, and overwrote its final message. `DnsLookupService.java` queried MX twice and collapsed transient failures. D-018 records the approved in-place safety cutover.
 
 ## D-009 — SMTP is optional, conservative, and disabled by default
-Status: **Accepted direction; provisional operational policy** pending authorization and egress threat review.
+Status: **Automatic SMTP path removed in D-018; future SMTP policy provisional** pending authorization and egress threat review.
 Decision: No automatic sending and no unrestricted probing. SMTP verification requires explicit opt-in policy, bounded egress/concurrency, and local fake-server tests; it is not part of the baseline milestone.
 Rationale: Recipient enumeration, injection, unreliable responses, and network abuse are unacceptable defaults.
 Alternatives: Always probe or remove SMTP forever.
 Trade-offs/consequences: Less mailbox-level evidence by default; if enabled later, document consent/authorization, timeouts, allowable targets, and unknown outcomes before deployment.
-Audit evidence: Current `SmtpVerificationService.java:20-101` connects on port 25 on the normal request path and logs full email addresses; `EmailFormatValidator.java` permits control characters that reach `RCPT TO`. No live probes were run. Remove the automatic path before enabling any optional future protocol check.
+Audit evidence (before D-018): `SmtpVerificationService.java:20-101` connected on port 25 on the request path and logged full addresses; `EmailFormatValidator.java` permitted control characters that reached `RCPT TO`. No live probes were run. D-018 removed the automatic path and obsolete service.
 
 ## D-010 — Docker Compose local-first runtime
 Status: **Accepted direction; provisional service topology** until the local deployment is designed.
@@ -108,12 +109,12 @@ Trade-offs/consequences: Staging and row/result mapping use storage and require 
 Audit evidence: Only `POST /api/email/validate` and `/api/email/test` exist in `EmailValidationHistoryController.java`; no import/export or tenant model exists.
 
 ## D-014 — Single-address compatibility beside asynchronous bulk jobs
-Status: **Proposed; unimplemented**, with a safety cutover requiring an explicit API contract decision.
+Status: **Single-address cutover approved and implemented in D-018; asynchronous bulk routes still proposed and unimplemented**.
 Decision: Keep the existing single-address route while adding separate asynchronous import/progress/results/export routes; do not turn `/api/email/validate` into a job-creation endpoint without versioned or approved contract migration. Remove automatic SMTP from its normal path as the accepted safety direction in D-009, and explicitly document/test the resulting response/status changes.
 Rationale: Bulk requests need durable progress and retries; established single-address callers must not silently receive a job ID instead of their existing response.
 Alternatives: Issue 15,000 synchronous validation requests, replace the existing route in place, or keep unsafe SMTP for wire compatibility.
 Trade-offs/consequences: Two entry paths temporarily share classification rules; the safety fix changes legacy semantics. Inventory consumers before cutover and test both contracts. Do not add compatibility shims that preserve unsafe probing.
-Audit evidence: `EmailValidationHistoryService.validate` synchronously performs DNS, SMTP and persistence; `EmailValidationResponse` returns nullable booleans plus status/message; neither route has been live-tested.
+Audit evidence (before D-018): `EmailValidationHistoryService.validate` synchronously performed DNS, SMTP and persistence; `EmailValidationResponse` returned nullable booleans plus status/message. D-018 replaced probing with a passive response in place.
 
 ## D-015 — Fenced PostgreSQL leases rather than a broker
 Status: **Accepted claim and completion flow; unimplemented**, with lease/backoff/failure limits provisional until tested.
@@ -137,3 +138,19 @@ Decision: Preserve upstream Git history and copyright. The original remote is `u
 Rationale: A README claim alone is not a standalone full license grant, and pushing can expose private data; Git history attributes upstream work.
 Alternatives: Reset Git history, claim original authorship, or push immediately based on an incomplete notice.
 Trade-offs/consequences: `upstream` is `https://github.com/aasheesh06/MailGuard.git`, `origin` is `https://github.com/soumaydutt/mail-intelligence-platform.git`. The upstream README asserts MIT and names the author, while upstream has no `LICENSE` or GitHub license metadata. Obtain confirmation of upstream rights; do not represent the gap as resolved by adding a derivative `LICENSE`.
+
+## D-018 — Passive single-address API cutover
+Status: **Approved in conversation; implemented and verified offline**, pending production MySQL/Docker validation.
+Decision: Keep `POST /api/email/validate` synchronous and its existing response fields; remove automatic SMTP probing and return `smtpVerified=null`. Reject ISO control characters locally. Return `INVALID` only on format failure, otherwise `UNVERIFIED`. Set `mxRecordFound=true` for a non-null MX, `false` for absent MX/NXDOMAIN/null MX, and `null` for DNS errors or an unparseable domain. Save the same outcome in history; query MX once.
+Rationale: DNS observations do not establish mailbox existence. Eliminating port-25 probes and false `VALID`/`INVALID` classifications is safer than preserving misleading legacy behavior.
+Alternatives: Add a second passive route while disabling the old probe, or leave automatic SMTP in place. The user selected the smaller in-place cutover.
+Trade-offs/consequences: Existing callers expecting SMTP booleans or `VALID` for an accepted `RCPT TO` must handle `null`/`UNVERIFIED`. The current response still lacks timestamps, provenance, and detailed DNS reason codes; those belong to the durable evidence milestone. MySQL history and retention/access policy remain unverified.
+Verification (2026-10-15): A focused HTTP regression failed before the cutover (`absentMxIsUnverifiedRatherThanInvalid`). Offline DNS fixtures and H2-backed HTTP tests pass after it; a live local H2 smoke returned HTTP 200 with `UNVERIFIED`, `mxRecordFound=null`, `smtpVerified=null` for an unparseable DNS name and `INVALID` for CR/LF. No external DNS or SMTP was used.
+
+## D-019 — Step 1 error and build-context privacy boundary
+Status: **Implemented and verified with test-scope H2**; production MySQL and Docker remain unverified.
+Decision: Keep the synchronous API's success fields, route names and existing HTTP 500 status for oversized input. Validate the `email` field against the history column's 255-character limit before persistence. Return a fixed message for unexpected errors and preserve the error response fields while replacing untrusted request paths with `/`. Disable default Hibernate SQL printing and resolved-exception warnings that include rejected values or paths. Exclude local `.env*`, `.agents/`, `.omp/` and skill metadata from Docker's build context; ignore `.env*` in Git.
+Rationale: Database and framework exceptions exposed SQL details and synthetic address fragments in HTTP responses or logs. Credentials embedded in a JDBC URL can appear in startup logs.
+Alternatives: Change oversized inputs to HTTP 400 now, echo the exception details, or log resolved exceptions verbatim. A new 4xx error contract needs separate approval; preserving HTTP 500 avoids another status change during the approved SMTP cutover.
+Trade-offs/consequences: Oversized input still receives a generic HTTP 500 with no history row; that status is not ideal but matches the existing observable outcome. The safe-path fallback `/` loses path detail for unknown routes. Suppressing the framework's resolved-exception WARN logs reduces diagnostics; unrelated infrastructure logs, MySQL behavior, image contents and PII retention/access policy remain unverified. Do not put credentials in `DB_URL`.
+Verification (2026-10-15): Before the fix, H2 HTTP requests exposed SQL or a synthetic address in errors, and resolver WARN logs included rejected values and unknown paths. Focused offline log-capture tests failed before the logging setting and passed after it, even with `spring.mvc.log-resolved-exception=true`. `mvn -B package` passed 20 tests. A Java 21/H2 smoke checked both routes, OpenAPI, invalid and unknown DNS results, oversized input and sanitized errors; its observed logs contained no synthetic address or SQL statement. Neither MySQL nor Docker was run.

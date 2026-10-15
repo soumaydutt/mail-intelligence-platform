@@ -1,51 +1,45 @@
 package com.aash.mailguard.dns;
 
-import com.aash.mailguard.exception.DnsLookupException;
 import org.springframework.stereotype.Component;
-import org.xbill.DNS.*;
+import org.xbill.DNS.Lookup;
+import org.xbill.DNS.MXRecord;
+import org.xbill.DNS.Name;
 import org.xbill.DNS.Record;
+import org.xbill.DNS.Resolver;
+import org.xbill.DNS.TextParseException;
+import org.xbill.DNS.Type;
 
 @Component
 public class DnsLookupService {
-    public boolean hasMxRecord(String domain){
+    private final Resolver resolver;
 
-        try {
-            Lookup lookup=new Lookup(domain, Type.MX);
-
-            Record[] records= lookup.run();
-
-            if (records != null && records.length>0) {
-                return true;
-            }
-
-            return false;
-        } catch (TextParseException e) {
-            throw new DnsLookupException("Unable to perform DNS lookup.", e);
-        }
+    public DnsLookupService() {
+        this(Lookup.getDefaultResolver());
     }
 
-    public String getMxHost(String domain){
+    DnsLookupService(Resolver resolver) {
+        this.resolver = resolver;
+    }
+
+    public Boolean hasMxRecord(String domain) {
         try {
-            Lookup lookup = new Lookup(domain, Type.MX);
-
+            Lookup lookup = new Lookup(Name.fromString(domain, Name.root), Type.MX);
+            lookup.setResolver(resolver);
             Record[] records = lookup.run();
-
-            if (records == null || records.length == 0) {
-                return null;
+            if (lookup.getResult() == Lookup.SUCCESSFUL) {
+                for (Record record : records) {
+                    if (!((MXRecord) record).getTarget().equals(Name.root)) {
+                        return true;
+                    }
+                }
+                return false;
             }
-
-            MXRecord mxRecord = (MXRecord) records[0];
-
-            String host = mxRecord.getTarget().toString();
-
-            if (host.endsWith(".")) {
-                host = host.substring(0, host.length() - 1);
+            if (lookup.getResult() == Lookup.HOST_NOT_FOUND || lookup.getResult() == Lookup.TYPE_NOT_FOUND) {
+                return false;
             }
-
-            return host;
-
+            return null;
         } catch (TextParseException e) {
-            throw new DnsLookupException("Unable to perform DNS lookup.", e);
+            return null;
         }
     }
 }

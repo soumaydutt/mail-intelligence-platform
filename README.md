@@ -1,25 +1,22 @@
 # MailGuard
-![Java](https://img.shields.io/badge/Java-23-orange?style=for-the-badge&logo=openjdk)
+![Java](https://img.shields.io/badge/Java-21-orange?style=for-the-badge&logo=openjdk)
 ![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.1-green?style=for-the-badge&logo=springboot)
 ![Maven](https://img.shields.io/badge/Maven-Build-red?style=for-the-badge&logo=apachemaven)
 ![MySQL](https://img.shields.io/badge/MySQL-8-blue?style=for-the-badge&logo=mysql)
 ![Swagger](https://img.shields.io/badge/Swagger-OpenAPI-green?style=for-the-badge&logo=swagger)
 
-A lightweight Java library for validating email addresses using format validation, domain validation, MX record lookup, and SMTP verification.
+MailGuard exposes a synchronous, passive email check: local format validation followed by one DNS MX observation. It does not verify a mailbox or send email.
 
-This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The email intelligence architecture in [PLAN.md](PLAN.md) is planned, not implemented; the current application remains the upstream single-address API.
+This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The broader email intelligence architecture in [PLAN.md](PLAN.md) is planned, not implemented.
 
 ---
 ## ✨ Features
 - ✔ Email format validation
-- ✔ Domain validation
-- ✔ MX record lookup using DNS
-- ✔ SMTP mailbox verification
+- ✔ Domain extraction and MX observation using DNS
+- ✔ Explicit unknown DNS outcome; no SMTP connection
 - ✔ REST API built with Spring Boot
 - ✔ Swagger/OpenAPI documentation
 - ✔ MySQL validation history
-- ✔ Detailed logging using SLF4J
-- ✔ Layered architecture
 - ✔ Maven project
 
 ## 📦 Installation
@@ -34,6 +31,9 @@ Move into the project directory:
 ```bash
 cd mail-intelligence-platform
 ```
+
+Requires Java 21 and Maven. The current application needs a MySQL database with `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` set; tests use an isolated in-memory H2 database.
+Keep credentials in `DB_USERNAME` and `DB_PASSWORD`, not in `DB_URL`: the JDBC URL appears in startup logs. MySQL startup and history writes have not been tested against a live server.
 
 Build the project:
 
@@ -57,16 +57,7 @@ http://localhost:8080/swagger-ui/index.html
 You can now test all available email validation APIs directly from Swagger UI.
 
 ## 📖 Usage
-MailGuard validates an email address through multiple verification stages.
-
-Validation flow:
-
-1. Email Format Validation
-2. Domain Validation
-3. MX Record Lookup
-4. SMTP Verification
-
-Every validation request is stored in the database for future reference.
+MailGuard checks local email format, then observes DNS MX records for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values retain the existing HTTP 500 status but are rejected before DNS or persistence.
 
 ## 📧 Email Validation
 ### Validate an Email Address
@@ -85,7 +76,9 @@ Request Body
 }
 ```
 
-Response
+Unexpected errors return HTTP 500 with a generic message. Error responses retain `timestamp`, `status`, `message`, and `path` fields; paths containing untrusted input are redacted.
+
+Response when an MX record is observed (example):
 
 ```json
 {
@@ -93,45 +86,16 @@ Response
   "domain": "example.com",
   "formatValid": true,
   "mxRecordFound": true,
-  "smtpVerified": true,
-  "status": "VALID",
-  "message": "Email format and domain are valid."
+  "smtpVerified": null,
+  "status": "UNVERIFIED",
+  "message": "MX record observed; mailbox not verified."
 }
 ```
 
 ## 🌐 MX Record Lookup
-MailGuard automatically retrieves MX (Mail Exchange) records using DNS lookup.
+One DNS MX lookup reports `mxRecordFound=true` for a non-null MX, `false` for no MX/NXDOMAIN or a null MX, and `null` for timeout, server failure, or unparseable domain. A missing MX does not prove mailbox invalidity; an MX record does not prove mailbox existence.
 
-Example:
-
-```text
-gmail.com
-    ↓
-MX Record
-    ↓
-gmail-smtp-in.l.google.com
-```
-
-Only domains having valid MX records proceed to SMTP verification.
-
-## 📨 SMTP Verification
-MailGuard establishes an SMTP connection with the recipient mail server to verify whether the email address exists.
-
-SMTP Flow
-
-```text
-Client
-   │
-   ├── HELO
-   ├── MAIL FROM
-   ├── RCPT TO
-   └── QUIT
-        │
-        ▼
-Mail Server
-```
-
-If the server accepts the `RCPT TO` command, the email is considered deliverable.
+`status` is `INVALID` only for local format failures. Any format-valid input returns `UNVERIFIED`; `smtpVerified` is always `null`. The API performs no SMTP probe or email sending.
 
 ## 📚 REST API
 ### Base URL
@@ -145,27 +109,15 @@ http://localhost:8080
 | POST | `/api/email/validate` | Validate an email address |
 
 ## 📂 Project Structure
-```text
-src
-├── controller
-├── service
-├── smtp
-├── dns
-├── validator
-├── model
-├── repository
-├── dto
-└── config
-```
+The root Maven project contains the Spring Boot API in `src/main/java/com/aash/mailguard` and offline tests in `src/test/java`.
 
 ## 🛠 Technologies
-- Java 23
+- Java 21
 - Spring Boot 4
 - Spring Data JPA
 - MySQL
 - Maven
 - DNSJava
-- SMTP
 - Swagger (OpenAPI)
 - Lombok
 

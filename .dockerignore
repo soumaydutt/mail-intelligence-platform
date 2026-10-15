@@ -2,3 +2,7 @@ target
 .idea
 .git
 .mvn/wrapper/maven-wrapper.jar
+.env*
+.omp/
+.agents/
+skills-lock.json
