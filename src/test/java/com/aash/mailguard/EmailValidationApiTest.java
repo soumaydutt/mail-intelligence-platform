@@ -4,6 +4,9 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.aash.mailguard.dns.DnsLookupService;
+import com.aash.mailguard.dns.DnsObservation;
+import com.aash.mailguard.dns.DnsObservation.Outcome;
+import com.aash.mailguard.dns.DnsObservation.Reason;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -22,6 +25,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -84,6 +89,7 @@ class EmailValidationApiTest {
             assertTrue(response.body().contains("\"formatValid\":false"));
         }
         assertEquals(1, repository.count());
+        verifyNoInteractions(dnsLookup);
     }
 
     @Test
@@ -106,7 +112,7 @@ class EmailValidationApiTest {
 
     @Test
     void absentMxIsUnverifiedRatherThanInvalid() throws Exception {
-        when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
+        when(dnsLookup.lookup("example.test")).thenReturn(observation(Outcome.NO_MAIL_ROUTE, Reason.NO_MAIL_ROUTE, "example.test"));
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@example.test\"}"))
@@ -118,12 +124,32 @@ class EmailValidationApiTest {
             assertTrue(response.body().contains("\"status\":\"UNVERIFIED\""));
             assertTrue(response.body().contains("\"mxRecordFound\":false"));
             assertTrue(response.body().contains("\"smtpVerified\":null"));
+            assertTrue(response.body().contains("\"message\":\"No MX record observed; mailbox not verified.\""));
         }
     }
 
     @Test
+    void implicitNullAndNxdomainKeepTheirLegacyMxMeaningInResponseAndHistory() throws Exception {
+        assertDnsResponse(Outcome.MAIL_ROUTE, Reason.IMPLICIT_MX, "implicit.test", false,
+                "Implicit address route observed; mailbox not verified.");
+        assertDnsResponse(Outcome.MAIL_NOT_ACCEPTED, Reason.NULL_MX, "nullmx.test", false,
+                "Null MX declares mail not accepted; mailbox not verified.");
+        assertDnsResponse(Outcome.NO_MAIL_ROUTE, Reason.DOMAIN_NOT_FOUND, "nxdomain.test", false,
+                "No MX record observed; mailbox not verified.");
+    }
+
+    @Test
+    void advertisedMultipleMxAndMalformedDnsStayUnverifiedWithDistinctLegacyValues() throws Exception {
+        assertDnsResponse(Outcome.MAIL_ROUTE, Reason.MULTIPLE_MX, "multiple.test", true,
+                "MX record observed; mailbox not verified.");
+        assertDnsResponse(Outcome.UNKNOWN, Reason.DNS_MALFORMED_RESPONSE, "malformed.test", null,
+                "DNS lookup unavailable; mailbox not verified.");
+    }
+
+
+    @Test
     void observedMxDoesNotTriggerSmtpOrClaimValidity() throws Exception {
-        when(dnsLookup.hasMxRecord("example.test")).thenReturn(true);
+        when(dnsLookup.lookup("example.test")).thenReturn(observation(Outcome.MAIL_ROUTE, Reason.MX_PRESENT, "example.test"));
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@example.test\"}"))
@@ -135,6 +161,7 @@ class EmailValidationApiTest {
             assertTrue(response.body().contains("\"status\":\"UNVERIFIED\""));
             assertTrue(response.body().contains("\"mxRecordFound\":true"));
             assertTrue(response.body().contains("\"smtpVerified\":null"));
+            assertTrue(response.body().contains("\"message\":\"MX record observed; mailbox not verified.\""));
         }
         EmailValidationHistory history = repository.findAll().getFirst();
         assertEquals("UNVERIFIED", history.getStatus());
@@ -143,7 +170,7 @@ class EmailValidationApiTest {
 
     @Test
     void dnsFailureIsUnknownNotInvalid() throws Exception {
-        when(dnsLookup.hasMxRecord("example.test")).thenReturn(null);
+        when(dnsLookup.lookup("example.test")).thenReturn(observation(Outcome.UNKNOWN, Reason.DNS_TEMPORARY_FAILURE, "example.test"));
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@example.test\"}"))
@@ -154,6 +181,7 @@ class EmailValidationApiTest {
             assertEquals(200, response.statusCode());
             assertTrue(response.body().contains("\"status\":\"UNVERIFIED\""));
             assertTrue(response.body().contains("\"mxRecordFound\":null"));
+            assertTrue(response.body().contains("\"message\":\"DNS lookup unavailable; mailbox not verified.\""));
         }
         assertNull(repository.findAll().getFirst().getMxRecordFound());
     }
@@ -178,7 +206,7 @@ class EmailValidationApiTest {
         String domain = longTestDomain(56);
         String syntheticAddress = "x".repeat(64) + "@" + domain;
         assertEquals(254, syntheticAddress.length());
-        when(dnsLookup.hasMxRecord(domain)).thenReturn(false);
+        when(dnsLookup.lookup(domain)).thenReturn(observation(Outcome.NO_MAIL_ROUTE, Reason.NO_MAIL_ROUTE, domain));
 
         HttpResponse<String> response = sendValidation(syntheticAddress);
         assertEquals(200, response.statusCode());
@@ -193,13 +221,13 @@ class EmailValidationApiTest {
         assertEquals(syntheticAddress, history.getEmail());
         assertEquals(domain, history.getDomain());
         assertEquals("UNVERIFIED", history.getStatus());
-        verify(dnsLookup).hasMxRecord(domain);
+        verify(dnsLookup).lookup(domain);
     }
 
     @Test
     void plusAddressKeepsLocalPartAndNormalizesUppercaseDomain() throws Exception {
         String email = "First.Last+tag@EXAMPLE.TEST";
-        when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
+        when(dnsLookup.lookup("example.test")).thenReturn(observation(Outcome.NO_MAIL_ROUTE, Reason.NO_MAIL_ROUTE, "example.test"));
 
         HttpResponse<String> response = sendValidation(email);
         assertEquals(200, response.statusCode());
@@ -212,13 +240,13 @@ class EmailValidationApiTest {
         assertEquals(1, repository.count());
         assertEquals(email, history.getEmail());
         assertEquals("example.test", history.getDomain());
-        verify(dnsLookup).hasMxRecord("example.test");
+        verify(dnsLookup).lookup("example.test");
     }
 
     @Test
     void quotedLocalAllowsAtAndEscapedQuotesWithoutChangingEmail() throws Exception {
         String email = "\"Name@\\\"Unit\\\"\"@EXAMPLE.TEST";
-        when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
+        when(dnsLookup.lookup("example.test")).thenReturn(observation(Outcome.NO_MAIL_ROUTE, Reason.NO_MAIL_ROUTE, "example.test"));
 
         HttpResponse<String> response = sendValidation(email);
         assertEquals(200, response.statusCode());
@@ -231,14 +259,14 @@ class EmailValidationApiTest {
         assertEquals(1, repository.count());
         assertEquals(email, history.getEmail());
         assertEquals("example.test", history.getDomain());
-        verify(dnsLookup).hasMxRecord("example.test");
+        verify(dnsLookup).lookup("example.test");
     }
 
     @Test
     void unicodeDomainUsesAsciiIdnaForDnsResponseAndHistory() throws Exception {
         String email = "User@BÜCHER.TEST";
         String domain = "xn--bcher-kva.test";
-        when(dnsLookup.hasMxRecord(domain)).thenReturn(false);
+        when(dnsLookup.lookup(domain)).thenReturn(observation(Outcome.NO_MAIL_ROUTE, Reason.NO_MAIL_ROUTE, domain));
 
         HttpResponse<String> response = sendValidation(email);
         assertEquals(200, response.statusCode());
@@ -251,7 +279,7 @@ class EmailValidationApiTest {
         assertEquals(1, repository.count());
         assertEquals(email, history.getEmail());
         assertEquals(domain, history.getDomain());
-        verify(dnsLookup).hasMxRecord(domain);
+        verify(dnsLookup).lookup(domain);
     }
 
     @Test
@@ -376,7 +404,7 @@ class EmailValidationApiTest {
 
     @Test
     void serverFailureRemainsSanitized() throws Exception {
-        when(dnsLookup.hasMxRecord("fixture.test")).thenThrow(new IllegalStateException("test-sentinel-secret"));
+        when(dnsLookup.lookup("fixture.test")).thenThrow(new IllegalStateException("test-sentinel-secret"));
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@fixture.test\"}"))
@@ -419,6 +447,46 @@ class EmailValidationApiTest {
             assertEquals(200, response.statusCode());
             assertTrue(response.body().contains("/api/email/validate"));
         }
+    }
+
+    private void assertDnsResponse(Outcome outcome, Reason reason, String domain, Boolean mxFound,
+                                   String message) throws Exception {
+        String email = "a@" + domain;
+        when(dnsLookup.lookup(domain)).thenReturn(observation(outcome, reason, domain));
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(7, body.size());
+        assertEquals(email, body.path("email").asText());
+        assertEquals(domain, body.path("domain").asText());
+        assertTrue(body.path("formatValid").asBoolean());
+        assertEquals("UNVERIFIED", body.path("status").asText());
+        assertEquals(mxFound, body.path("mxRecordFound").isNull() ? null : body.path("mxRecordFound").booleanValue());
+        assertTrue(body.path("smtpVerified").isNull());
+        assertEquals(message, body.path("message").asText());
+
+        assertEquals(1, repository.count());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(email, history.getEmail());
+        assertEquals(domain, history.getDomain());
+        assertTrue(history.getFormatValid());
+        assertEquals("UNVERIFIED", history.getStatus());
+        assertEquals(mxFound, history.getMxRecordFound());
+        assertNull(history.getSmtpVerified());
+        assertEquals(message, history.getMessage());
+        verify(dnsLookup).lookup(domain);
+        repository.deleteAll();
+    }
+
+    private static DnsObservation observation(Outcome outcome, Reason reason, String domain) {
+        List<DnsObservation.MxHost> mxHosts = switch (reason) {
+            case MX_PRESENT -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"));
+            case MULTIPLE_MX -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"),
+                    new DnsObservation.MxHost(20, "mx2.example.test"));
+            default -> List.of();
+        };
+        return new DnsObservation(outcome, reason, domain, mxHosts,
+                reason == Reason.DNS_TEMPORARY_FAILURE, Instant.parse("2026-01-01T00:00:00Z"));
     }
 
     private static String longTestDomain(int thirdLabelLength) {
