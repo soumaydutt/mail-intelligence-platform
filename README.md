@@ -33,7 +33,7 @@ cd mail-intelligence-platform
 ```
 
 Requires Java 21 and Maven. The current application needs a MySQL database with `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` set; tests use an isolated in-memory H2 database.
-Keep credentials in `DB_USERNAME` and `DB_PASSWORD`, not in `DB_URL`: the JDBC URL appears in startup logs. MySQL startup and history writes have not been tested against a live server.
+Keep credentials in `DB_USERNAME` and `DB_PASSWORD`, not in `DB_URL`: the JDBC URL appears in startup logs. A disposable MySQL 8.4 container passed startup and two synthetic history writes; production data remains unverified.
 
 Build the project:
 
@@ -57,7 +57,7 @@ http://localhost:8080/swagger-ui/index.html
 You can now test all available email validation APIs directly from Swagger UI.
 
 ## 📖 Usage
-MailGuard checks local email format, then observes DNS MX records for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values retain the existing HTTP 500 status but are rejected before DNS or persistence.
+MailGuard checks local email format, then observes DNS MX records for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
 
 ## 📧 Email Validation
 ### Validate an Email Address
@@ -76,7 +76,7 @@ Request Body
 }
 ```
 
-Unexpected errors return HTTP 500 with a generic message. Error responses retain `timestamp`, `status`, `message`, and `path` fields; paths containing untrusted input are redacted.
+Invalid request bodies return HTTP 400 with a fixed message; unexpected errors return HTTP 500 with a generic message. Error responses retain `timestamp`, `status`, `message`, and `path` fields. Known API routes retain their path; unknown paths are redacted to `/`.
 
 Response when an MX record is observed (example):
 

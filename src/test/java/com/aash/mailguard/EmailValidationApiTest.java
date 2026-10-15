@@ -169,7 +169,7 @@ class EmailValidationApiTest {
     }
 
     @Test
-    void oversizedAddressFailsBeforePersistenceWithoutDisclosure() throws Exception {
+    void oversizedAddressReturnsBadRequestWithoutPersistenceOrDisclosure() throws Exception {
         String syntheticAddress = "test-sentinel-" + "x".repeat(300);
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
@@ -178,8 +178,8 @@ class EmailValidationApiTest {
 
         try (HttpClient client = HttpClient.newHttpClient()) {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            assertEquals(500, response.statusCode());
-            assertTrue(response.body().contains("\"message\":\"Internal server error\""));
+            assertEquals(400, response.statusCode());
+            assertTrue(response.body().contains("\"message\":\"Invalid request\""));
             assertTrue(response.body().contains("\"path\":\"/api/email/validate\""));
             assertFalse(response.body().contains("test-sentinel-"));
             assertFalse(response.body().contains("SQL"));
@@ -188,6 +188,54 @@ class EmailValidationApiTest {
         verifyNoInteractions(dnsLookup);
         assertFalse(resolvedErrors.list.stream()
                 .anyMatch(event -> event.getFormattedMessage().contains("test-sentinel-")));
+    }
+
+    @Test
+    void malformedJsonReturnsBadRequestWithoutDisclosure() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"test-sentinel-"))
+                .build();
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, response.statusCode());
+            assertTrue(response.body().contains("\"message\":\"Invalid request\""));
+            assertTrue(response.body().contains("\"path\":\"/api/email/validate\""));
+            assertFalse(response.body().contains("test-sentinel-"));
+        }
+        assertEquals(0, repository.count());
+        verifyNoInteractions(dnsLookup);
+    }
+
+    @Test
+    void knownTestRouteIsNotRedactedInErrorResponses() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/test"))
+                .GET().build();
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(500, response.statusCode());
+            assertTrue(response.body().contains("\"path\":\"/api/email/test\""));
+        }
+    }
+
+    @Test
+    void serverFailureRemainsSanitized() throws Exception {
+        when(dnsLookup.hasMxRecord("fixture.test")).thenThrow(new IllegalStateException("test-sentinel-secret"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@fixture.test\"}"))
+                .build();
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(500, response.statusCode());
+            assertTrue(response.body().contains("\"message\":\"Internal server error\""));
+            assertTrue(response.body().contains("\"path\":\"/api/email/validate\""));
+            assertFalse(response.body().contains("test-sentinel-secret"));
+        }
+        assertEquals(0, repository.count());
     }
 
     @Test

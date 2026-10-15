@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: Phase 1 in progress: Java 21 build, passive single-address verification and generic error handling are offline-tested. Production MySQL/Docker and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
+Status: Phase 1 in progress: Java 21 build, passive single-address verification and generic error handling are tested. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
 
 ## Goals and current scope
 
@@ -104,11 +104,11 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 
 **Approval gates for later milestones:** D-018 approved the in-place safety cutover for the single-address API. Resolve legacy MySQL data ownership/import; authorized future SMTP/egress policy (or keep off); CSV size/tenant, dedup, retention, export access and suppression policy; durable reason-code/confidence taxonomy; measured job lease/concurrency and Valkey outage behavior. The original repository is `upstream` and `https://github.com/soumaydutt/mail-intelligence-platform.git` is `origin`. Upstream grant confirmation remains outstanding.
 
-**Phase 1 implementation evidence:** Java 21 and Springdoc 3.1.1 build and run with test-scope H2; a synchronous passive API rejects ISO controls, distinguishes observed/absent/unknown MX and never probes SMTP. Offline fixtures cover DNS responses, and HTTP tests cover response/history and sanitized error outcomes (D-019). The packaged jar contains the MySQL driver and targets Java 21, but no live MySQL or Docker runtime was available; retention/access remains open. See [PROGRESS.md](PROGRESS.md). No worker, caching or UI exists.
+**Phase 1 implementation evidence:** Java 21 and Springdoc 3.1.1 build and run with test-scope H2; a synchronous passive API rejects ISO controls, distinguishes observed/absent/unknown MX and never probes SMTP. Offline fixtures cover DNS responses, including resolver I/O failure, and HTTP tests cover response/history and sanitized error outcomes (D-019/D-020). A disposable MySQL 8.4 instance accepted two synthetic history writes from the Java 21 Docker image; production data and retention/access remain unverified. See [PROGRESS.md](PROGRESS.md). No worker, caching or UI exists.
 
 - [x] Audit source, dependencies, tests, build, persistence, licensing; run existing tests safely (test failure recorded above).
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
-- [ ] Phase 1 safe baseline (Java 21, passive API and error handling offline-tested; MySQL/Docker and retention/access unverified).
+- [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
 - [ ] Phase 2 durable core (not started).
 - [ ] Phase 3 bounded intelligence (not started).
 - [ ] Phase 4 optional SMTP (not started; requires explicit approval/policy).

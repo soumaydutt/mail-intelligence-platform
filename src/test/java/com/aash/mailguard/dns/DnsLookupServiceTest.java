@@ -10,6 +10,7 @@ import org.xbill.DNS.Rcode;
 import org.xbill.DNS.Resolver;
 import org.xbill.DNS.Section;
 
+import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -59,6 +60,14 @@ class DnsLookupServiceTest {
         when(resolver.send(any(Message.class))).thenThrow(new InterruptedIOException("timeout"));
 
         assertNull(new DnsLookupService(resolver).hasMxRecord("timeout.fixture.test."));
+    }
+
+    @Test
+    void resolverIOExceptionIsUnknownNotMissingMx() throws Exception {
+        Resolver resolver = mock(Resolver.class);
+        when(resolver.send(any(Message.class))).thenThrow(new IOException("temporary resolver failure"));
+
+        assertNull(new DnsLookupService(resolver).hasMxRecord("temporary.fixture.test."));
     }
 
     @Test

@@ -3,13 +3,14 @@
 These are architecture records, not claims of implementation. **Accepted** means agreed direction; **proposed** needs approval; **provisional** means a repository-audit or implementation detail still needs verification. Future changes should add a new numbered decision or explicitly supersede an earlier ID, with evidence. See [PLAN.md](PLAN.md) and [PROGRESS.md](PROGRESS.md).
 
 ## D-001 — Java 21 and Spring Boot backend
-Status: **Accepted direction; Java 21 API/OpenAPI verified with test-scope H2**, production MySQL and Docker image unverified.
+Status: **Accepted direction; Java 21 API/OpenAPI verified with test-scope H2 and disposable Docker/MySQL**, production data unverified.
 Decision: Align compiler, runtime, CI, and containers on Java 21; retain Spring Boot with a compatible dependency set.
 Rationale: One supported baseline limits environment drift while retaining the existing Java ecosystem.
 Alternatives: Keep Java 17/23 as currently documented or replace Spring Boot.
 Trade-offs/consequences: Pin Spring Boot 4.1.0 with springdoc 3.1.1; test-scope H2 isolates HTTP/startup tests but does not prove MySQL compatibility or container startup.
 Audit evidence: `pom.xml:8,29-30` selects Spring Boot 4.1.0 and Java 17; `Dockerfile:1` and README select Java 23. The sole context test fails at datasource setup, so it does not establish API or springdoc runtime compatibility.
 Implementation evidence (2026-10-15): `pom.xml` compiles for Java 21; `Dockerfile` selects Temurin 21. `mvn -B test` passed two offline HTTP tests. The app started on Java 21 with test-scope H2; live `/api/email/validate` (malformed input), `/v3/api-docs`, and Swagger UI returned HTTP 200. Docker and production database were not tested.
+Subsequent runtime evidence (2026-10-15): The Java 21 Docker image started against a disposable MySQL 8.4.11 container; two synthetic requests persisted two history rows. Production data and restart persistence remain unverified; see PROGRESS.md.
 
 ## D-002 — React, TypeScript, and Vite client
 Status: **Accepted direction**; scope of initial UI is provisional.
@@ -148,9 +149,16 @@ Trade-offs/consequences: Existing callers expecting SMTP booleans or `VALID` for
 Verification (2026-10-15): A focused HTTP regression failed before the cutover (`absentMxIsUnverifiedRatherThanInvalid`). Offline DNS fixtures and H2-backed HTTP tests pass after it; a live local H2 smoke returned HTTP 200 with `UNVERIFIED`, `mxRecordFound=null`, `smtpVerified=null` for an unparseable DNS name and `INVALID` for CR/LF. No external DNS or SMTP was used.
 
 ## D-019 — Step 1 error and build-context privacy boundary
-Status: **Implemented and verified with test-scope H2**; production MySQL and Docker remain unverified.
+Status: **Implemented; H2 and disposable MySQL/Docker verified**. The oversized-input HTTP 500 rule was superseded by D-020; production data remains unverified.
 Decision: Keep the synchronous API's success fields, route names and existing HTTP 500 status for oversized input. Validate the `email` field against the history column's 255-character limit before persistence. Return a fixed message for unexpected errors and preserve the error response fields while replacing untrusted request paths with `/`. Disable default Hibernate SQL printing and resolved-exception warnings that include rejected values or paths. Exclude local `.env*`, `.agents/`, `.omp/` and skill metadata from Docker's build context; ignore `.env*` in Git.
 Rationale: Database and framework exceptions exposed SQL details and synthetic address fragments in HTTP responses or logs. Credentials embedded in a JDBC URL can appear in startup logs.
 Alternatives: Change oversized inputs to HTTP 400 now, echo the exception details, or log resolved exceptions verbatim. A new 4xx error contract needs separate approval; preserving HTTP 500 avoids another status change during the approved SMTP cutover.
 Trade-offs/consequences: Oversized input still receives a generic HTTP 500 with no history row; that status is not ideal but matches the existing observable outcome. The safe-path fallback `/` loses path detail for unknown routes. Suppressing the framework's resolved-exception WARN logs reduces diagnostics; unrelated infrastructure logs, MySQL behavior, image contents and PII retention/access policy remain unverified. Do not put credentials in `DB_URL`.
 Verification (2026-10-15): Before the fix, H2 HTTP requests exposed SQL or a synthetic address in errors, and resolver WARN logs included rejected values and unknown paths. Focused offline log-capture tests failed before the logging setting and passed after it, even with `spring.mvc.log-resolved-exception=true`. `mvn -B package` passed 20 tests. A Java 21/H2 smoke checked both routes, OpenAPI, invalid and unknown DNS results, oversized input and sanitized errors; its observed logs contained no synthetic address or SQL statement. Neither MySQL nor Docker was run.
+
+## D-020 — Request error status and safe route reporting
+Status: **Approved in the PR #1 review request; implemented and verified with HTTP tests**.
+Decision: Keep format-invalid email strings as HTTP 200 with `status=INVALID`. Return HTTP 400 with a fixed message for malformed JSON and `@Size(max=255)` violations, superseding D-019's HTTP 500 rule for oversized inputs. Keep unexpected failures as sanitized HTTP 500; report only exact known API routes (`/api/email/validate`, `/api/email/test`) in error responses and redact unknown paths to `/`. DNS resolver I/O failures remain uncertain MX observations as required by D-018.
+Rationale: Invalid request bodies are client errors, not server failures. Explicit route allowlisting retains useful paths without reflecting untrusted URI content; transient DNS errors cannot establish absent MX.
+Trade-offs/consequences: Callers relying on HTTP 500 for oversized input must handle HTTP 400. Format-invalid strings still produce HTTP 200 and history records; unsupported methods and unknown routes retain the existing generic HTTP 500 behavior until a separate contract decision. No external DNS or SMTP probes are used for these tests.
+Verification (2026-10-15): The original `@Size` HTTP integration test passed while asserting 500. Three new expectations failed before the fix: oversized and malformed JSON returned 500, and `/api/email/test` was redacted. The existing timeout fixture and new `IOException` fixture both returned unknown MX (`null`) before changes to DNS code. Focused HTTP/DNS tests and a local Java 21/H2 API smoke passed after the handler change; see PROGRESS.md for the final package check.
