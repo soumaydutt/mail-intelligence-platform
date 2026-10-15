@@ -1,0 +1,115 @@
+# MailGuard engineering plan
+
+Status: planning; no application migration has begun. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
+
+## Goals and current scope
+
+Build a local-first email intelligence platform that reports evidence and uncertainty rather than promising mailbox existence or delivery. Provide a Java 21/Spring Boot API, an independently runnable worker, and a React/TypeScript/Vite client. Use PostgreSQL for durable records and jobs, Flyway for migrations, and Valkey for bounded DNS caching and rate limiting. Run the stack with Docker Compose; no cloud account is required. Preserve upstream MIT attribution.
+
+In scope: syntax analysis, DNS/MX observations, historical bounce analysis when authorized data is available, and optional conservative SMTP verification behind explicit policy. No SMTP or email sending is needed for the first implementation milestone. Results must identify each check, its observed evidence, timestamp, provenance, and uncertainty; unavailable evidence must not be represented as invalidity. Personal data handling and egress policy are part of the product, not follow-up polish.
+
+## Proposed architecture (target, not current state)
+
+- One modular-monolith codebase with independently runnable API and worker processes. Put domain/result policies, persistence contracts, and infrastructure adapters behind explicit module boundaries; avoid splitting into services by default.
+- API accepts bounded requests, enforces access and rate policy, returns results or durable job references, and never performs unrestricted SMTP probing. Worker claims due jobs from PostgreSQL using leases, persists results idempotently, and records retryable failures separately from terminal outcomes. Expired leases are reclaimable; transient errors have bounded retries and backoff. Exact lease duration, keys, and batch limits are to be set and tested during implementation.
+- PostgreSQL is the source of truth for jobs, verification evidence, and history. Flyway owns schema changes. Valkey is a disposable cache/limiter, never the only copy of a durable job or result. DNS cache entries require explicit TTL and negative/error semantics.
+- I/O work may use Java virtual threads, bounded by admission/concurrency limits. Virtual threads do not remove upstream DNS/SMTP, database pool, or memory limits.
+- Verification is staged: parse/syntax; DNS/MX with explicit absent/temporary-error distinctions; optional historical bounce signals; optional policy-gated, conservative SMTP. DNS evidence does not prove a mailbox exists; SMTP acceptance does not prove deliverability. Define stable result categories before adding new checks.
+- React/TypeScript/Vite consumes the documented API. Docker Compose starts local PostgreSQL, Valkey, API, worker, UI, and observability components as appropriate; services must have health/readiness and non-secret local defaults. OpenTelemetry instrumentation and Prometheus/Grafana provide local diagnostics without exposing address-level personal data.
+
+## Existing architecture and migration map (verified source, not running behavior)
+
+| Existing component | Proposed treatment | Reason |
+| --- | --- | --- |
+| `MailGuardApplication`, Maven/Spring Web controller, request/response DTOs | Reuse as a starting API shell; contract-test `/api/email/validate` and `/api/email/test` before changing either | One process and two POST routes exist; neither has been smoke-tested with a database. |
+| `EmailFormatValidator`, `EmailUtil`, `DnsLookupService`, `EmailValidationHistoryService` | Refactor behind syntax, DNS observation, and classification boundaries | Current validator admits control characters; DNS repeats MX lookup and collapses lookup failures; service marks SMTP acceptance `VALID` and overwrites its message. |
+| `SmtpVerificationService` | Remove from the default request path in the explicitly approved safety cutover; retain no automatic probe or send path | Current port-25 probe interpolates the address into `RCPT TO` and logs full addresses. Optional SMTP requires separate policy approval. |
+| JPA history entity/repository and MySQL configuration | Retain only as a migration inventory until legacy-data ownership is resolved; replace schema updates with versioned PostgreSQL/Flyway migrations | Current table holds full addresses and nullable booleans; MySQL inventory is unavailable. |
+| `GlobalExceptionHandler`, Springdoc, Dockerfile, context test | Rework error exposure and compatibility; align Java version, isolate tests, preserve useful startup wiring | Handler returns exception text; Docker skips tests; OpenAPI startup and database context have not been proven. |
+| Worker, CSV import/export, suppressions, UI, Compose, metrics | New components, not present in the inspected source | Do not claim these as existing behavior or create empty modules in advance. |
+
+The current API performs syntax, two DNS MX queries, SMTP, then a history write synchronously; it has no job lifecycle or bulk endpoint. The target keeps one deployable codebase with separate API and worker entry points, PostgreSQL-owned jobs/evidence, Valkey-only ephemeral state, and a separate UI. Keep the root Maven layout initially; move it under `backend/` only when a working multi-module build requires that move. Do not reorganize files to match a diagram.
+
+## Proposed boundaries and contracts (design only)
+
+- Feature packages within the backend: `api` (request bounds, auth, responses); `verification` (`syntax`, `dns`, `classification`, and optional policy-gated `smtp`); `jobs` (claim, lease, retry, completion); `contacts`/`imports` (CSV rows, deduplication, access); `bounces`/`suppression` (authorized observations and exclusions); `infrastructure` (PostgreSQL, DNS client, Valkey, telemetry). Dependency direction: API and worker call domain operations; verification policy does not depend on HTTP, cache, or database entities.
+- Proposed PostgreSQL records: `import_batch` (owner, state, counts, created/completed times); `import_row` (batch, ordinal, accepted/duplicate/rejected reason); `contact` (owner, normalized address, retention metadata); `verification_job` (batch/contact, state, due time, attempts, lease owner/token/expiry); `verification_evidence` (job, stage, observed outcome/reason, source, observed time); `verification_result` (job, final category, reason codes, computed time); `suppression` (owner, scope, reason); `bounce_observation` only for authorized data with provenance. Exact identifiers, unique indexes, PII access rules, and legacy-import mapping require migration design and approval.
+- Proposed bulk API: `POST /api/imports` accepts bounded CSV and returns an import ID; `GET /api/imports/{id}` reports counts and state; `GET /api/imports/{id}/results` paginates row-level outcomes; `GET /api/imports/{id}/export` streams authorized results. Start with server-side access control and explicit retention; never put raw addresses into URLs or telemetry. Keep `/api/email/validate` until its changed safety/response contract is deliberately approved and tested; do not present these proposed routes as implemented.
+
+## Agreed bulk processing flow (design; not implemented)
+
+1. **CSV import:** Stream bounded batches rather than loading the full file. Validate upload, CSV structure and configured limits; persist each input row's ordinal so rejected rows retain their place. Do not dispatch jobs from an incomplete import; failed staging must leave no runnable partial batch.
+2. **Normalize and deduplicate:** Normalize accepted addresses once. Mark missing or structurally unusable rows as rejected; retain duplicates with a link to the first accepted row in the same import. Email syntax is a verification result, not silently discarded by import validation. Define normalization and rejection rules before implementation.
+3. **Create durable jobs in PostgreSQL:** For each accepted unique contact within that import, persist one job. Make staging finalization and job creation restart-safe and idempotent; duplicates reuse that row's result, not a second job. Do not deduplicate across owners by default.
+4. **Workers claim jobs:** Use `FOR UPDATE SKIP LOCKED` in short claim transactions, with an incrementing lease token and expiry. Perform network work outside transactions with bounded claims, in-flight tasks and timeouts. Reclaim expired jobs safely.
+5. **Run verification stages:** Record local syntax first, then DNS/MX where meaningful, then only authorized historical evidence. Distinguish absent, transient and unavailable observations; SMTP remains disabled without separate policy approval. Classification reports evidence limits, not guaranteed deliverability.
+6. **Persist evidence and completion atomically:** Commit evidence, reason-coded result and terminal job state in one transaction only if the current token still owns an unexpired lease. On transient failure, commit the failure observation and retry state together under the same fence; retry with bounded attempts/backoff. Reject stale writes. Exhaustion records `FAILED`/uncertainty, never fabricated `INVALID`. Use unique keys for at-least-once reclaims.
+7. **Results and export:** Count `input = rejected + duplicate + accepted unique`; count accepted unique jobs once across pending, leased, retry, completed and failed. Do not double-count duplicates in job progress. Paginate results; export one annotated row per original ordinal in CSV order with reason codes and authorized evidence, including rejected and duplicate rows.
+
+The agreed sequence does not fix CSV limits, normalization, reason-code taxonomy, lease/backoff numbers, owner authorization or retention. Those remain design gates; the existing single-address API is unchanged by this document. PostgreSQL Testcontainers must prove competing claims, crash/reclaim, stale writes and atomic completion; a deterministic 15,000-row offline fixture must prove row accounting and export order.
+
+## Architecture trade-offs
+
+- Modular monolith instead of microservices: shared transactions and one release keep 15,000-row processing operable locally; API and worker still have separate processes and resource limits. Microservices would add cross-service auth, deployment and consistency costs before a measured need.
+- PostgreSQL `SKIP LOCKED` jobs instead of a broker: transactional state with evidence makes recovery and audit simpler at this scale; polling, indexes and lease fencing cost DB capacity. Revisit a broker only after measured queue latency/throughput exceeds the database-backed design. Valkey must not become the durable queue.
+- Asynchronous bulk verification instead of 15,000 synchronous HTTP calls: durable progress, explicit failures and bounded I/O avoid request timeouts. A single-address API may remain for compatibility after its unsafe automatic SMTP behavior is explicitly changed; do not silently switch its response semantics or repurpose its route.
+
+## Dependencies and sequencing
+
+1. Agree on evidence schema, privacy/retention and egress policy before changing verification behavior or designing tables; preserve any existing API behavior unless the contract change is explicit.
+2. Align Java 21 build/runtime and isolate tests; select compatible Spring Boot/OpenAPI versions based on a running smoke test.
+3. Introduce PostgreSQL/Flyway and proven migrations before moving durable jobs/history; use Testcontainers for database-backed tests.
+4. Define the API/worker job and import contracts before enabling asynchronous throughput; test bounded ingestion, competing claims, stale lease fencing and crash recovery at the 15,000-row target.
+5. Add Valkey only after cache/rate-limit semantics and failure behavior are specified; keep PostgreSQL authoritative.
+6. Implement streaming CSV import/deduplication and ordered export against the proven job/evidence contract; then build the React client and Compose/observability around verified API behavior.
+
+## Implementation phases and acceptance criteria
+
+| Phase | Deliverable | Exit criteria |
+| --- | --- | --- |
+| 0: audit and docs | Verified baseline and ADRs | Existing build/test outcomes and licensing recorded; no unsafe network checks; first milestone scoped. |
+| 1: safe baseline | Java 21 build, deterministic tests, passive verification contract | Maven build and JUnit tests pass without SMTP/external DNS; malformed input and uncertain DNS results do not become false `VALID`/`INVALID`; existing endpoints are intentionally migrated or preserved; MIT notice retained. |
+| 2: durable core | PostgreSQL, Flyway, API/worker job pipeline | Fresh and migrated schemas tested with Testcontainers; concurrent claims, lease expiry/fencing, retries, idempotency and restart recovery verified; API and worker each start independently. Inventory legacy MySQL data before any migration. |
+| 3: bounded bulk intelligence | CSV ingestion/export, DNS/cache, authorized historical evidence, bounded concurrency, Valkey rate limiting | Deterministic 15,000-row fixture imports with duplicate/rejected-row accounting, resumable jobs and ordered exports; DNS is injectable and offline; cache outages and bounded load are demonstrated. |
+| 4: optional SMTP | Policy-gated conservative verification, only if approved | Disabled by default; explicit operator policy, egress controls, no automatic mail sending; tests use local fake SMTP only, never external servers; uncertainty remains visible. |
+| 5: local product | React/Vite UI, Compose, CI, telemetry and operations | Local stack starts without cloud services; API/worker/UI import-progress-results-export path smoke-tested; CI exercises offline units and PostgreSQL/Valkey integration; dashboards avoid address-level PII. |
+
+## Testing strategy
+
+- JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
+- Deterministic DNS fixtures and local protocol fakes; no live SMTP probes or personal email accounts in CI. Keep any SMTP integration disabled without explicit operator policy.
+- Testcontainers with PostgreSQL for Flyway, repository queries, concurrent claims, lease recovery, and restart-safe persistence; add Valkey integration coverage for cache TTL and rate limiting once implemented.
+- Verify API contract/error paths and UI journeys, then smoke-run API and worker under Compose. Measure concurrency/queue backpressure and inspect OTel/Prometheus signals without logging full addresses.
+- Exercise deterministic 15,000-row imports with malformed/duplicate input, export-order invariants, rejected-row counts, interrupted ingestion, expired leases, stale workers and failed DNS; never use external MX/SMTP hosts. Establish throughput and memory budgets by measurement rather than claiming scale from design alone.
+- Existing tests are the baseline; their audit result will be recorded below. Never mark a phase done solely because code compiles.
+
+## Risks and out of scope
+
+Risks: misclassifying temporary DNS/SMTP failures as invalidity; SMTP misuse or network pivot; PII in logs/history/telemetry/CSV exports; oversized or malformed uploads; uncontrolled jobs or unbounded virtual threads; duplicate processing after lease loss; schema drift; cache outages; incompatible framework/documentation dependencies. Mitigate with typed outcomes, disabled-by-default SMTP, egress/rate limits, access/retention policy, bounded streaming, lease fencing, idempotent writes, bounded resource pools, Flyway, and offline tests.
+
+Out of scope for this plan: cloud hosting, automatic outbound email campaigns or sending, unrestricted SMTP enumeration, access to personal accounts, claiming guaranteed deliverability, distributed microservices, and speculative enrichment sources. Historical bounce analysis needs authorized local data; it must not invent observations when none exist.
+
+## Audit record and progress tracker
+
+**Verified repository facts (read-only audit):**
+
+- `pom.xml` uses Spring Boot 4.1.0, Java release 17, Spring Web MVC/JPA/Validation, MySQL connector, dnsjava 3.6.3, springdoc 2.8.9, and JUnit-capable test starters. The README and Docker image say Java 23 (`README.md:161-170`, `Dockerfile:1`); these are not the agreed Java 21 baseline. Springdoc's runtime compatibility has not been established.
+- One Spring Boot process exposes `POST /api/email/validate` and `/test` (`EmailValidationHistoryController.java`). No worker, frontend, Compose file, Flyway, Valkey, PostgreSQL driver, or Testcontainers setup exists in the inspected tree. The endpoint's live behavior was not exercised.
+- Validation checks only `@` and a dot (`EmailFormatValidator.java`), queries MX twice and uses the first result (`DnsLookupService.java`), then automatically connects to the MX host on port 25 and issues `HELO`, `MAIL FROM`, `RCPT TO`, and `QUIT` (`SmtpVerificationService.java`). No external SMTP calls were made in this audit. DNS failures and SMTP refusals/timeouts are not represented as distinct evidence. The service overwrites its success/failure message before saving (`EmailValidationHistoryService.java:79-111`).
+- JPA stores full email, domain, nullable Boolean checks, status, message and local timestamp in `email_validation_history` through a `JpaRepository` (`EmailValidationHistory.java`, `EmailValidationHistoryRepository.java`). `application.properties` requires `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, uses `ddl-auto=update` and enables SQL output. There is no versioned schema or retention/access policy in the tree.
+- Only one test exists: `MailguardApplicationTests.contextLoads`. `mvn test -B -q -Dspring.test.context.failure.threshold=1` reached Surefire but ended **1 test, 0 failures, 1 error**: datasource initialization rejected the unresolved URL (`'url' must start with "jdbc"`). The required DB environment variables are absent in this environment. No test exercised the API, DNS, SMTP, or database writes. `Dockerfile` packages with `-DskipTests`.
+- The upstream tree's README claims MIT and contains `Copyright (c) 2026 Aasheesh Verma`; upstream has no standalone `LICENSE` and `pom.xml:17-19` has an empty license element. This derivative adds the canonical MIT text with that attribution in `LICENSE` for distribution; the upstream grant's provenance remains unverified.
+
+**Unverified / assumptions, not facts:** Whether existing installations contain MySQL history to migrate; actual runtime availability of the API/Swagger with configured DB; supported email syntax and historical bounce data source; consent and network egress policy for any future SMTP; target concurrency/lease/retry limits; Valkey TTL and fail-open/closed policy. The current README's assertion that `RCPT TO` acceptance means deliverability is not a product guarantee.
+
+**Approval gates before implementation:** Resolve legacy MySQL data ownership/import; single-address API cutover and tolerated compatibility break for disabling unsafe SMTP; authorized SMTP/egress policy (or keep off); CSV size/tenant, dedup, retention, export access and suppression policy; reason-code/confidence taxonomy; measured job lease/concurrency and Valkey outage behavior. The original repository is `upstream` and `https://github.com/soumaydutt/mail-intelligence-platform.git` is `origin`. User requested public baseline publication after the missing upstream license-file warning; upstream grant confirmation remains outstanding.
+
+**Recommended first implementation milestone (Phase 1):** Make validation passive by default and reject control characters before any interpolation into a protocol; define evidence/unknown semantics with deterministic DNS fixtures. Align Java 21 tooling, introduce isolated JUnit coverage and a database-backed context test without external network dependencies, then document the API contract change. Retain the canonical MIT text and upstream attribution; verify the original grant. No worker, caching, UI, or live SMTP in this milestone.
+
+- [x] Audit source, dependencies, tests, build, persistence, licensing; run existing tests safely (test failure recorded above).
+- [x] Record audit findings and provisional decisions; scope first implementation milestone.
+- [ ] Phase 1 safe baseline (not started).
+- [ ] Phase 2 durable core (not started).
+- [ ] Phase 3 bounded intelligence (not started).
+- [ ] Phase 4 optional SMTP (not started; requires explicit approval/policy).
+- [ ] Phase 5 local product (not started).

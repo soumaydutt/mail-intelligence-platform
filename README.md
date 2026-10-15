@@ -7,6 +7,8 @@
 
 A lightweight Java library for validating email addresses using format validation, domain validation, MX record lookup, and SMTP verification.
 
+This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The email intelligence architecture in [PLAN.md](PLAN.md) is planned, not implemented; the current application remains the upstream single-address API.
+
 ---
 ## ✨ Features
 - ✔ Email format validation
@@ -24,13 +26,13 @@ A lightweight Java library for validating email addresses using format validatio
 Clone the repository:
 
 ```bash
-git clone https://github.com/aasheesh06/MailGuard.git
+git clone https://github.com/soumaydutt/mail-intelligence-platform.git
 ```
 
 Move into the project directory:
 
 ```bash
-cd mailguard
+cd mail-intelligence-platform
 ```
 
 Build the project:
@@ -172,4 +174,4 @@ MIT License
 
 Copyright (c) 2026 Aasheesh Verma
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
