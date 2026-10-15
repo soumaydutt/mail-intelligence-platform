@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DnsLookupServiceTest {
@@ -67,6 +68,23 @@ class DnsLookupServiceTest {
 
         assertNull(new DnsLookupService(resolver).hasMxRecord("servfail.fixture.test."));
     }
+
+    @Test
+    void malformedDomainIsUnknownWithoutDns() {
+        Resolver resolver = mock(Resolver.class);
+
+        assertNull(new DnsLookupService(resolver).hasMxRecord("bad..fixture.test"));
+        verifyNoInteractions(resolver);
+    }
+
+    @Test
+    void nullDomainIsUnknownWithoutDns() {
+        Resolver resolver = mock(Resolver.class);
+
+        assertNull(new DnsLookupService(resolver).hasMxRecord(null));
+        verifyNoInteractions(resolver);
+    }
+
 
     @Test
     void nullMxExplicitlyDeclinesMail() throws Exception {

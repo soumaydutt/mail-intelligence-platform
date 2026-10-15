@@ -22,6 +22,10 @@ public class DnsLookupService {
     }
 
     public Boolean hasMxRecord(String domain) {
+        if (domain == null) {
+            return null;
+        }
+
         try {
             Lookup lookup = new Lookup(Name.fromString(domain, Name.root), Type.MX);
             lookup.setResolver(resolver);

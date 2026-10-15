@@ -35,3 +35,8 @@ build/
 
 # Local code intelligence index
 .code-review-graph/
+
+# Local agent tooling; shared instructions remain in AGENTS.md
+/.agents/
+/.omp/
+/skills-lock.json
