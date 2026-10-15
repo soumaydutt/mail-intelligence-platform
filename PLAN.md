@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: planning; no application migration has begun. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
+Status: Phase 1 in progress: Java 21 build, passive single-address verification and generic error handling are offline-tested. Production MySQL/Docker and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
 
 ## Goals and current scope
 
@@ -17,7 +17,7 @@ In scope: syntax analysis, DNS/MX observations, historical bounce analysis when 
 - Verification is staged: parse/syntax; DNS/MX with explicit absent/temporary-error distinctions; optional historical bounce signals; optional policy-gated, conservative SMTP. DNS evidence does not prove a mailbox exists; SMTP acceptance does not prove deliverability. Define stable result categories before adding new checks.
 - React/TypeScript/Vite consumes the documented API. Docker Compose starts local PostgreSQL, Valkey, API, worker, UI, and observability components as appropriate; services must have health/readiness and non-secret local defaults. OpenTelemetry instrumentation and Prometheus/Grafana provide local diagnostics without exposing address-level personal data.
 
-## Existing architecture and migration map (verified source, not running behavior)
+## Original architecture and migration map (pre-Phase 1 audit)
 
 | Existing component | Proposed treatment | Reason |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ In scope: syntax analysis, DNS/MX observations, historical bounce analysis when 
 | `GlobalExceptionHandler`, Springdoc, Dockerfile, context test | Rework error exposure and compatibility; align Java version, isolate tests, preserve useful startup wiring | Handler returns exception text; Docker skips tests; OpenAPI startup and database context have not been proven. |
 | Worker, CSV import/export, suppressions, UI, Compose, metrics | New components, not present in the inspected source | Do not claim these as existing behavior or create empty modules in advance. |
 
-The current API performs syntax, two DNS MX queries, SMTP, then a history write synchronously; it has no job lifecycle or bulk endpoint. The target keeps one deployable codebase with separate API and worker entry points, PostgreSQL-owned jobs/evidence, Valkey-only ephemeral state, and a separate UI. Keep the root Maven layout initially; move it under `backend/` only when a working multi-module build requires that move. Do not reorganize files to match a diagram.
+The audited API performed syntax, two DNS MX queries, SMTP, then a history write synchronously. Phase 1 kept the synchronous route and history write, but now performs one MX observation without SMTP (D-018). There is still no job lifecycle or bulk endpoint. The target keeps one deployable codebase with separate API and worker entry points, PostgreSQL-owned jobs/evidence, Valkey-only ephemeral state, and a separate UI. Keep the root Maven layout initially; move it under `backend/` only when a working multi-module build requires that move.
 
 ## Proposed boundaries and contracts (design only)
 
@@ -100,15 +100,15 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - Only one test exists: `MailguardApplicationTests.contextLoads`. `mvn test -B -q -Dspring.test.context.failure.threshold=1` reached Surefire but ended **1 test, 0 failures, 1 error**: datasource initialization rejected the unresolved URL (`'url' must start with "jdbc"`). The required DB environment variables are absent in this environment. No test exercised the API, DNS, SMTP, or database writes. `Dockerfile` packages with `-DskipTests`.
 - The upstream tree's README claims MIT and contains `Copyright (c) 2026 Aasheesh Verma`; upstream has no standalone `LICENSE` and `pom.xml:17-19` has an empty license element. This derivative adds the canonical MIT text with that attribution in `LICENSE` for distribution; the upstream grant's provenance remains unverified.
 
-**Unverified / assumptions, not facts:** Whether existing installations contain MySQL history to migrate; actual runtime availability of the API/Swagger with configured DB; supported email syntax and historical bounce data source; consent and network egress policy for any future SMTP; target concurrency/lease/retry limits; Valkey TTL and fail-open/closed policy. The current README's assertion that `RCPT TO` acceptance means deliverability is not a product guarantee.
+**Unverified / assumptions, not facts:** Whether existing installations contain MySQL history to migrate; actual runtime availability of the API/Swagger with configured MySQL; supported email syntax and historical bounce data source; consent and network egress policy for any future SMTP; target concurrency/lease/retry limits; Valkey TTL and fail-open/closed policy. At audit time README asserted `RCPT TO` acceptance meant deliverability; the current API no longer probes SMTP and the README no longer makes that claim.
 
-**Approval gates before implementation:** Resolve legacy MySQL data ownership/import; single-address API cutover and tolerated compatibility break for disabling unsafe SMTP; authorized SMTP/egress policy (or keep off); CSV size/tenant, dedup, retention, export access and suppression policy; reason-code/confidence taxonomy; measured job lease/concurrency and Valkey outage behavior. The original repository is `upstream` and `https://github.com/soumaydutt/mail-intelligence-platform.git` is `origin`. User requested public baseline publication after the missing upstream license-file warning; upstream grant confirmation remains outstanding.
+**Approval gates for later milestones:** D-018 approved the in-place safety cutover for the single-address API. Resolve legacy MySQL data ownership/import; authorized future SMTP/egress policy (or keep off); CSV size/tenant, dedup, retention, export access and suppression policy; durable reason-code/confidence taxonomy; measured job lease/concurrency and Valkey outage behavior. The original repository is `upstream` and `https://github.com/soumaydutt/mail-intelligence-platform.git` is `origin`. Upstream grant confirmation remains outstanding.
 
-**Recommended first implementation milestone (Phase 1):** Make validation passive by default and reject control characters before any interpolation into a protocol; define evidence/unknown semantics with deterministic DNS fixtures. Align Java 21 tooling, introduce isolated JUnit coverage and a database-backed context test without external network dependencies, then document the API contract change. Retain the canonical MIT text and upstream attribution; verify the original grant. No worker, caching, UI, or live SMTP in this milestone.
+**Phase 1 implementation evidence:** Java 21 and Springdoc 3.1.1 build and run with test-scope H2; a synchronous passive API rejects ISO controls, distinguishes observed/absent/unknown MX and never probes SMTP. Offline fixtures cover DNS responses, and HTTP tests cover response/history and sanitized error outcomes (D-019). The packaged jar contains the MySQL driver and targets Java 21, but no live MySQL or Docker runtime was available; retention/access remains open. See [PROGRESS.md](PROGRESS.md). No worker, caching or UI exists.
 
 - [x] Audit source, dependencies, tests, build, persistence, licensing; run existing tests safely (test failure recorded above).
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
-- [ ] Phase 1 safe baseline (not started).
+- [ ] Phase 1 safe baseline (Java 21, passive API and error handling offline-tested; MySQL/Docker and retention/access unverified).
 - [ ] Phase 2 durable core (not started).
 - [ ] Phase 3 bounded intelligence (not started).
 - [ ] Phase 4 optional SMTP (not started; requires explicit approval/policy).

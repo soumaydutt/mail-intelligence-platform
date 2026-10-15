@@ -9,6 +9,12 @@ public class EmailFormatValidator {
         if (email == null || email.isBlank()) {
             return false;
         }
+        for (int i = 0; i < email.length(); i++) {
+            if (Character.isISOControl(email.charAt(i))) {
+                return false;
+            }
+        }
+
 
         int atIndex = email.indexOf("@");
 

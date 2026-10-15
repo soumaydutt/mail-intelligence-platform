@@ -1,6 +1,9 @@
 package com.aash.mailguard.dto;
 
+import jakarta.validation.constraints.Size;
+
 public class EmailValidationRequest {
+    @Size(max = 255)
     private  String email;
 
     public EmailValidationRequest() {

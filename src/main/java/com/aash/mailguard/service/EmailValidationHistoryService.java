@@ -5,7 +5,6 @@ import com.aash.mailguard.dto.EmailValidationRequest;
 import com.aash.mailguard.dto.EmailValidationResponse;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
-import com.aash.mailguard.smtp.SmtpVerificationService;
 import com.aash.mailguard.util.EmailUtil;
 import com.aash.mailguard.validator.EmailFormatValidator;
 import org.springframework.stereotype.Service;
@@ -18,19 +17,17 @@ public class EmailValidationHistoryService {
     private final EmailFormatValidator validator;
     private final DnsLookupService dnsLookup;
     private final EmailUtil util;
-    private final SmtpVerificationService smtpVerificationService;
 
     public EmailValidationHistoryService(
             EmailValidationHistoryRepository repository,
             EmailFormatValidator validator,
             DnsLookupService dnsLookup,
-            EmailUtil util,SmtpVerificationService smtpVerificationService) {
+            EmailUtil util) {
 
         this.repository = repository;
         this.validator=validator;
         this.dnsLookup=dnsLookup;
         this.util=util;
-        this.smtpVerificationService=smtpVerificationService;
     }
     public EmailValidationResponse validate(EmailValidationRequest request) {
 
@@ -55,43 +52,16 @@ public class EmailValidationHistoryService {
         response.setDomain(domain);
 
 
-        boolean mxFound=dnsLookup.hasMxRecord(domain);
+        Boolean mxFound = dnsLookup.hasMxRecord(domain);
         response.setMxRecordFound(mxFound);
-
-        if (!mxFound) {
-            response.setStatus("INVALID");
-            response.setMessage("Domain has no MX Record");
-            saveHistory(response);
-            return response;
-        }
-
-
-
-        String mxHost = dnsLookup.getMxHost(domain);
-
-        if (mxHost == null) {
-            response.setStatus("INVALID");
-            response.setMessage("MX Host not found");
-            saveHistory(response);
-            return response;
-        }
-
-        boolean smtpVerified =
-                smtpVerificationService.verify(email, mxHost);
-
-        response.setSmtpVerified(smtpVerified);
-
-        if (smtpVerified) {
-            response.setStatus("VALID");
-            response.setMessage("Email verified successfully.");
+        response.setStatus("UNVERIFIED");
+        if (Boolean.TRUE.equals(mxFound)) {
+            response.setMessage("MX record observed; mailbox not verified.");
+        } else if (Boolean.FALSE.equals(mxFound)) {
+            response.setMessage("No MX record observed; mailbox not verified.");
         } else {
-            response.setStatus("UNVERIFIED");
-            response.setMessage("SMTP verification failed.");
+            response.setMessage("DNS lookup unavailable; mailbox not verified.");
         }
-
-        response.setMessage("Email format and domain are valid.");
-
-
         saveHistory(response);
 
         return response;
