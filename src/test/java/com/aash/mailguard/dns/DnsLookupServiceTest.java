@@ -142,6 +142,7 @@ class DnsLookupServiceTest {
 
     private static Message reply(Message query, int rcode) {
         Message response = new Message(query.getHeader().getID());
+        response.getHeader().setFlag(org.xbill.DNS.Flags.QR);
         response.addRecord(query.getQuestion(), Section.QUESTION);
         response.getHeader().setRcode(rcode);
         return response;

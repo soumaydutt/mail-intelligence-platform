@@ -1,6 +1,7 @@
 package com.aash.mailguard.service;
 
 import com.aash.mailguard.dns.DnsLookupService;
+import com.aash.mailguard.dns.DnsObservation;
 import com.aash.mailguard.dto.EmailValidationRequest;
 import com.aash.mailguard.dto.EmailValidationResponse;
 import com.aash.mailguard.entity.EmailValidationHistory;
@@ -47,16 +48,16 @@ public class EmailValidationHistoryService {
         response.setDomain(syntax.domain());
 
 
-        Boolean mxFound = dnsLookup.hasMxRecord(syntax.domain());
-        response.setMxRecordFound(mxFound);
+        DnsObservation observation = dnsLookup.lookup(syntax.domain());
+        response.setMxRecordFound(observation.legacyMxRecordFound());
         response.setStatus("UNVERIFIED");
-        if (Boolean.TRUE.equals(mxFound)) {
-            response.setMessage("MX record observed; mailbox not verified.");
-        } else if (Boolean.FALSE.equals(mxFound)) {
-            response.setMessage("No MX record observed; mailbox not verified.");
-        } else {
-            response.setMessage("DNS lookup unavailable; mailbox not verified.");
-        }
+        response.setMessage(switch (observation.reason()) {
+            case MX_PRESENT, MULTIPLE_MX -> "MX record observed; mailbox not verified.";
+            case IMPLICIT_MX -> "Implicit address route observed; mailbox not verified.";
+            case NULL_MX -> "Null MX declares mail not accepted; mailbox not verified.";
+            case NO_MAIL_ROUTE, DOMAIN_NOT_FOUND -> "No MX record observed; mailbox not verified.";
+            default -> "DNS lookup unavailable; mailbox not verified.";
+        });
         saveHistory(response);
 
         return response;
