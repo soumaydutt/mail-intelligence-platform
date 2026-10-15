@@ -6,6 +6,8 @@ import ch.qos.logback.core.read.ListAppender;
 import com.aash.mailguard.dns.DnsLookupService;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,11 +22,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -47,6 +51,7 @@ class EmailValidationApiTest {
 
     @Autowired
     EmailValidationHistoryRepository repository;
+    private static final ObjectMapper objectMapper = new ObjectMapper();
     @MockitoBean
     DnsLookupService dnsLookup;
     @BeforeEach
@@ -169,26 +174,157 @@ class EmailValidationApiTest {
     }
 
     @Test
-    void addressAtStorageLimitPreservesResponseAndHistory() throws Exception {
-        String syntheticAddress = "x".repeat(242) + "@fixture.test";
-        when(dnsLookup.hasMxRecord("fixture.test")).thenReturn(false);
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"" + syntheticAddress + "\"}"))
-                .build();
+    void addressAtSmtpLimitPreservesResponseAndHistory() throws Exception {
+        String domain = longTestDomain(56);
+        String syntheticAddress = "x".repeat(64) + "@" + domain;
+        assertEquals(254, syntheticAddress.length());
+        when(dnsLookup.hasMxRecord(domain)).thenReturn(false);
 
-        try (HttpClient client = HttpClient.newHttpClient()) {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            assertEquals(200, response.statusCode());
-            assertTrue(response.body().contains("\"status\":\"UNVERIFIED\""));
-            assertTrue(response.body().contains("\"mxRecordFound\":false"));
+        HttpResponse<String> response = sendValidation(syntheticAddress);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(syntheticAddress, body.path("email").asText());
+        assertEquals(domain, body.path("domain").asText());
+        assertEquals("UNVERIFIED", body.path("status").asText());
+        assertFalse(body.path("mxRecordFound").asBoolean());
+
+        assertEquals(1, repository.count());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(syntheticAddress, history.getEmail());
+        assertEquals(domain, history.getDomain());
+        assertEquals("UNVERIFIED", history.getStatus());
+        verify(dnsLookup).hasMxRecord(domain);
+    }
+
+    @Test
+    void plusAddressKeepsLocalPartAndNormalizesUppercaseDomain() throws Exception {
+        String email = "First.Last+tag@EXAMPLE.TEST";
+        when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
+
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(email, body.path("email").asText());
+        assertEquals("example.test", body.path("domain").asText());
+        assertTrue(body.path("formatValid").asBoolean());
+        assertEquals("UNVERIFIED", body.path("status").asText());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(1, repository.count());
+        assertEquals(email, history.getEmail());
+        assertEquals("example.test", history.getDomain());
+        verify(dnsLookup).hasMxRecord("example.test");
+    }
+
+    @Test
+    void quotedLocalAllowsAtAndEscapedQuotesWithoutChangingEmail() throws Exception {
+        String email = "\"Name@\\\"Unit\\\"\"@EXAMPLE.TEST";
+        when(dnsLookup.hasMxRecord("example.test")).thenReturn(false);
+
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(email, body.path("email").asText());
+        assertEquals("example.test", body.path("domain").asText());
+        assertTrue(body.path("formatValid").asBoolean());
+        assertEquals("UNVERIFIED", body.path("status").asText());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(1, repository.count());
+        assertEquals(email, history.getEmail());
+        assertEquals("example.test", history.getDomain());
+        verify(dnsLookup).hasMxRecord("example.test");
+    }
+
+    @Test
+    void unicodeDomainUsesAsciiIdnaForDnsResponseAndHistory() throws Exception {
+        String email = "User@BÜCHER.TEST";
+        String domain = "xn--bcher-kva.test";
+        when(dnsLookup.hasMxRecord(domain)).thenReturn(false);
+
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(email, body.path("email").asText());
+        assertEquals(domain, body.path("domain").asText());
+        assertTrue(body.path("formatValid").asBoolean());
+        assertEquals("UNVERIFIED", body.path("status").asText());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(1, repository.count());
+        assertEquals(email, history.getEmail());
+        assertEquals(domain, history.getDomain());
+        verify(dnsLookup).hasMxRecord(domain);
+    }
+
+    @Test
+    void malformedAndUnsafeAddressesStayInvalidWithoutDnsAndRecordHistory() throws Exception {
+        for (String email : new String[] {"müller@example.test", "a@faß.test"}) {
+            HttpResponse<String> response = sendValidation(email);
+            assertEquals(200, response.statusCode(), email);
+            JsonNode body = objectMapper.readTree(response.body());
+            assertEquals(email, body.path("email").asText(), email);
+            assertEquals("INVALID", body.path("status").asText(), email);
+            assertFalse(body.path("formatValid").asBoolean(), email);
+            assertTrue(body.path("domain").isNull(), email);
+            assertTrue(body.path("mxRecordFound").isNull(), email);
+            assertTrue(body.path("smtpVerified").isNull(), email);
+            assertEquals(1, repository.count(), email);
+            EmailValidationHistory history = repository.findAll().getFirst();
+            assertEquals(email, history.getEmail(), email);
+            assertEquals("INVALID", history.getStatus(), email);
+            assertFalse(history.getFormatValid(), email);
+            assertNull(history.getDomain(), email);
+            assertNull(history.getMxRecordFound(), email);
+            verifyNoInteractions(dnsLookup);
+            repository.deleteAll();
         }
-        assertEquals(syntheticAddress, repository.findAll().getFirst().getEmail());
+    }
+
+    @Test
+    void numericFinalLabelIsInvalidBeforeDnsAndRetainsHistory() throws Exception {
+        String email = "user@example.123";
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(email, body.path("email").asText());
+        assertEquals("INVALID", body.path("status").asText());
+        assertFalse(body.path("formatValid").asBoolean());
+        assertTrue(body.path("domain").isNull());
+        assertTrue(body.path("mxRecordFound").isNull());
+        assertEquals(1, repository.count());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(email, history.getEmail());
+        assertEquals("INVALID", history.getStatus());
+        assertNull(history.getDomain());
+        verifyNoInteractions(dnsLookup);
+    }
+
+    @Test
+    void otherwiseWellFormed255CharacterAddressIsInvalidAndPersisted() throws Exception {
+        String email = "x".repeat(64) + "@" + longTestDomain(57);
+        assertEquals(255, email.length());
+
+        HttpResponse<String> response = sendValidation(email);
+        assertEquals(200, response.statusCode());
+        JsonNode body = objectMapper.readTree(response.body());
+        assertEquals(email, body.path("email").asText());
+        assertEquals("INVALID", body.path("status").asText());
+        assertFalse(body.path("formatValid").asBoolean());
+        assertTrue(body.path("domain").isNull());
+        assertTrue(body.path("mxRecordFound").isNull());
+        assertEquals(1, repository.count());
+        EmailValidationHistory history = repository.findAll().getFirst();
+        assertEquals(email, history.getEmail());
+        assertEquals("INVALID", history.getStatus());
+        assertFalse(history.getFormatValid());
+        assertNull(history.getDomain());
+        assertNull(history.getMxRecordFound());
+        verifyNoInteractions(dnsLookup);
     }
 
     @Test
     void oversizedAddressReturnsBadRequestWithoutPersistenceOrDisclosure() throws Exception {
-        String syntheticAddress = "test-sentinel-" + "x".repeat(300);
+        String syntheticAddress = "test-sentinel-" + "x".repeat(64 - "test-sentinel-".length())
+                + "@" + longTestDomain(58);
+        assertEquals(256, syntheticAddress.length());
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"" + syntheticAddress + "\"}"))
@@ -284,4 +420,19 @@ class EmailValidationApiTest {
             assertTrue(response.body().contains("/api/email/validate"));
         }
     }
+
+    private static String longTestDomain(int thirdLabelLength) {
+        return "a".repeat(63) + "." + "b".repeat(63) + "." + "c".repeat(thirdLabelLength) + ".test";
+    }
+
+    private HttpResponse<String> sendValidation(String email) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(Map.of("email", email))))
+                .build();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            return client.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
 }
