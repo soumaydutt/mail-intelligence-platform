@@ -22,7 +22,7 @@ import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
 import java.io.IOException;
-import java.io.InterruptedIOException;
+import java.net.InetAddress;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,6 +39,7 @@ public class DnsLookupService {
     private static final int MAX_QUERIES = 24;
     private static final int MAX_ALIAS_HOPS = 8;
     private static final int MAX_MX_RECORDS = 32;
+    private static final int MAX_ANSWER_RECORDS = 128;
 
     private final Resolver resolver;
     private final Semaphore admission = new Semaphore(MAX_IN_FLIGHT);
@@ -53,7 +54,7 @@ public class DnsLookupService {
 
     private static Resolver defaultResolver() {
         ExtendedResolver configured = new ExtendedResolver();
-        configured.setRetries(0);
+        configured.setRetries(1);
         configured.setTimeout(Duration.ofSeconds(2));
         for (Resolver server : configured.getResolvers()) {
             server.setTimeout(Duration.ofSeconds(2));
@@ -61,22 +62,18 @@ public class DnsLookupService {
         return configured;
     }
 
-    public Boolean hasMxRecord(String domain) {
-        if (domain == null) {
-            return null;
-        }
-        return lookup(domain).legacyMxRecordFound();
-    }
-
     public DnsObservation lookup(String canonicalAsciiDomain) {
         Name owner;
         try {
-            if (!validDomain(canonicalAsciiDomain)) {
+            if (canonicalAsciiDomain == null || canonicalAsciiDomain.isEmpty()) {
                 return observation(canonicalAsciiDomain, Reason.DNS_MALFORMED_RESPONSE, List.of());
             }
             owner = Name.fromString(canonicalAsciiDomain, Name.root);
         } catch (TextParseException e) {
             return observation(canonicalAsciiDomain, Reason.DNS_MALFORMED_RESPONSE, List.of());
+        }
+        if (resolver instanceof ExtendedResolver configured && configured.getResolver(0) == null) {
+            return observation(canonicalAsciiDomain, Reason.DNS_RESOLVER_UNAVAILABLE, List.of());
         }
 
         if (!admission.tryAcquire()) {
@@ -89,10 +86,10 @@ public class DnsLookupService {
                 return observation(canonicalAsciiDomain, mxAnswer.failure(), List.of());
             }
             if (!mxAnswer.records().isEmpty()) {
-                List<MxHost> hosts = new ArrayList<>();
+                List<Record> mxRecords = mxAnswer.records();
                 boolean nullMx = false;
-                for (Record record : mxAnswer.records()) {
-                    if (!(record instanceof MXRecord mx) || hosts.size() + (nullMx ? 1 : 0) >= MAX_MX_RECORDS
+                for (Record record : mxRecords) {
+                    if (!(record instanceof MXRecord mx) || mxRecords.size() > MAX_MX_RECORDS
                             || !mx.getTarget().isAbsolute()) {
                         return observation(canonicalAsciiDomain, Reason.DNS_MALFORMED_RESPONSE, List.of());
                     }
@@ -101,40 +98,92 @@ public class DnsLookupService {
                             return observation(canonicalAsciiDomain, Reason.DNS_MALFORMED_RESPONSE, List.of());
                         }
                         nullMx = true;
-                    } else {
-                        hosts.add(new MxHost(mx.getPriority(), mx.getTarget().toString()));
                     }
                 }
                 if (nullMx) {
                     return observation(canonicalAsciiDomain,
-                            hosts.isEmpty() && mxAnswer.records().size() == 1 ? Reason.NULL_MX : Reason.DNS_MALFORMED_RESPONSE,
-                            List.of());
+                            mxRecords.size() == 1 ? Reason.NULL_MX : Reason.DNS_MALFORMED_RESPONSE, List.of());
                 }
-                hosts.sort(Comparator.comparingInt(MxHost::preference));
-                return observation(canonicalAsciiDomain, hosts.size() == 1 ? Reason.MX_PRESENT : Reason.MULTIPLE_MX, hosts);
+                mxRecords.sort(Comparator.comparingInt(record -> ((MXRecord) record).getPriority()));
+                List<MxHost> hosts = new ArrayList<>(mxRecords.size());
+                for (Record record : mxRecords) {
+                    MXRecord mx = (MXRecord) record;
+                    hosts.add(new MxHost(mx.getPriority(), mx.getTarget().toString()));
+                }
+                Set<Name> inspected = mxRecords.size() > 1 ? new HashSet<>() : null;
+                boolean temporaryFailure = false;
+                boolean uncertainFailure = false;
+                for (Record record : mxRecords) {
+                    Name target = ((MXRecord) record).getTarget();
+                    if (inspected != null && !inspected.add(target)) {
+                        continue;
+                    }
+                    if (queries[0] == MAX_QUERIES) {
+                        return observation(canonicalAsciiDomain, Reason.DNS_QUERY_BUDGET_EXCEEDED, hosts);
+                    }
+                    Reason address = addressEvidence(target, queries, true);
+                    switch (address) {
+                        case IMPLICIT_MX -> {
+                            return observation(canonicalAsciiDomain,
+                                    temporaryFailure || uncertainFailure ? Reason.MX_TARGET_PARTIAL
+                                            : mxRecords.size() == 1 ? Reason.MX_PRESENT : Reason.MULTIPLE_MX, hosts);
+                        }
+                        case NO_MAIL_ROUTE, DOMAIN_NOT_FOUND -> { }
+                        case DNS_TEMPORARY_FAILURE, DNS_REFUSED, DNS_RESOLVER_UNAVAILABLE -> temporaryFailure = true;
+                        case DNS_QUERY_BUDGET_EXCEEDED -> {
+                            return observation(canonicalAsciiDomain, address, hosts);
+                        }
+                        default -> uncertainFailure = true;
+                    }
+                }
+                return observation(canonicalAsciiDomain,
+                        temporaryFailure ? Reason.MX_TARGET_TEMPORARY_FAILURE
+                                : uncertainFailure ? Reason.MX_TARGET_UNCERTAIN : Reason.MX_TARGET_NO_ADDRESS,
+                        hosts);
             }
 
-            Reason failure = null;
-            for (int type : new int[]{Type.A, Type.AAAA}) {
-                Answer address = resolve(mxAnswer.owner(), type, queries);
-                if (address.failure() != null) {
-                    if (failure == null) {
-                        failure = address.failure() == Reason.DOMAIN_NOT_FOUND
-                                ? Reason.DNS_MALFORMED_RESPONSE : address.failure();
-                    }
-                } else if (!address.records().isEmpty()) {
-                    return observation(canonicalAsciiDomain, Reason.IMPLICIT_MX, List.of());
-                }
-            }
-            return observation(canonicalAsciiDomain, failure == null ? Reason.NO_MAIL_ROUTE : failure, List.of());
+            Reason address = addressEvidence(mxAnswer.owner(), queries, false);
+            return observation(canonicalAsciiDomain,
+                    address == Reason.DOMAIN_NOT_FOUND ? Reason.DNS_MALFORMED_RESPONSE : address, List.of());
         } finally {
             admission.release();
         }
     }
 
+    private Reason addressEvidence(Name owner, int[] queries, boolean mxTarget) {
+        Reason failure = null;
+        boolean noData = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            int type = attempt == 0 ? Type.A : Type.AAAA;
+            Answer address = resolve(owner, type, queries);
+            if (address.failure() == Reason.DNS_QUERY_BUDGET_EXCEEDED) {
+                return Reason.DNS_QUERY_BUDGET_EXCEEDED;
+            }
+            if (address.failure() == Reason.DOMAIN_NOT_FOUND) {
+                if (failure != null) {
+                    return failure;
+                }
+                return noData ? Reason.DNS_MALFORMED_RESPONSE : Reason.DOMAIN_NOT_FOUND;
+            }
+            if (address.failure() != null) {
+                if (failure == null) {
+                    failure = address.failure();
+                }
+            } else if (mxTarget && !address.owner().equals(owner)) {
+                return failure == null ? Reason.DNS_ALIAS_FAILURE : failure;
+            } else if (!address.records().isEmpty()) {
+                return Reason.IMPLICIT_MX;
+            } else {
+                noData = true;
+            }
+        }
+        return failure == null ? Reason.NO_MAIL_ROUTE : failure;
+    }
+
     private Answer resolve(Name initial, int type, int[] queries) {
         Set<Name> seen = new HashSet<>();
         Name owner = initial;
+        List<Record> inline = null;
         while (true) {
             if (!seen.add(owner)) {
                 return new Answer(owner, List.of(), Reason.DNS_ALIAS_LOOP);
@@ -142,54 +191,64 @@ public class DnsLookupService {
             if (seen.size() > MAX_ALIAS_HOPS + 1) {
                 return new Answer(owner, List.of(), Reason.DNS_ALIAS_DEPTH_EXCEEDED);
             }
-            if (queries[0] == MAX_QUERIES) {
-                return new Answer(owner, List.of(), Reason.DNS_RESOLVER_UNAVAILABLE);
-            }
-            queries[0]++;
-            Message query = Message.newQuery(Record.newRecord(owner, type, DClass.IN));
-            Message reply;
-            try {
-                reply = resolver.send(query);
-            } catch (InterruptedIOException e) {
-                return new Answer(owner, List.of(), Reason.DNS_TEMPORARY_FAILURE);
-            } catch (IOException e) {
-                return new Answer(owner, List.of(), Reason.DNS_RESOLVER_UNAVAILABLE);
-            }
-            if (reply == null || reply.getHeader().getID() != query.getHeader().getID()
-                    || !reply.getHeader().getFlag(Flags.QR) || reply.getHeader().getFlag(Flags.TC)
-                    || reply.getHeader().getOpcode() != Opcode.QUERY
-                    || reply.getHeader().getCount(Section.QUESTION) != 1
-                    || reply.getQuestion() == null || !reply.getQuestion().getName().equals(owner)
-                    || reply.getQuestion().getType() != type || reply.getQuestion().getDClass() != DClass.IN) {
-                return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
-            }
-            switch (reply.getRcode()) {
-                case Rcode.NXDOMAIN -> {
-                    if (reply.getHeader().getCount(Section.ANSWER) != 0) {
-                        return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
-                    }
-                    return new Answer(owner, List.of(), seen.size() > 1 ? Reason.DNS_ALIAS_FAILURE : Reason.DOMAIN_NOT_FOUND);
+            Message reply = null;
+            List<Record> answer;
+            if (inline != null) {
+                answer = inline;
+                inline = null;
+            } else {
+                if (queries[0] == MAX_QUERIES) {
+                    return new Answer(owner, List.of(), Reason.DNS_QUERY_BUDGET_EXCEEDED);
                 }
-                case Rcode.SERVFAIL -> {
+                queries[0]++;
+                Message query = Message.newQuery(Record.newRecord(owner, type, DClass.IN));
+                try {
+                    reply = resolver.send(query);
+                } catch (IOException e) {
                     return new Answer(owner, List.of(), Reason.DNS_TEMPORARY_FAILURE);
                 }
-                case Rcode.REFUSED -> {
-                    return new Answer(owner, List.of(), Reason.DNS_REFUSED);
-                }
-                case Rcode.NOERROR -> { }
-                default -> {
+                if (reply == null || reply.getHeader().getID() != query.getHeader().getID()
+                        || !reply.getHeader().getFlag(Flags.QR) || reply.getHeader().getFlag(Flags.TC)
+                        || reply.getHeader().getOpcode() != Opcode.QUERY
+                        || reply.getHeader().getCount(Section.QUESTION) != 1
+                        || reply.getQuestion() == null || !reply.getQuestion().getName().equals(owner)
+                        || reply.getQuestion().getType() != type || reply.getQuestion().getDClass() != DClass.IN) {
                     return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
                 }
+                switch (reply.getRcode()) {
+                    case Rcode.NXDOMAIN -> {
+                        if (reply.getHeader().getCount(Section.ANSWER) != 0) {
+                            return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+                        }
+                        return new Answer(owner, List.of(), seen.size() > 1 ? Reason.DNS_ALIAS_FAILURE : Reason.DOMAIN_NOT_FOUND);
+                    }
+                    case Rcode.SERVFAIL -> {
+                        return new Answer(owner, List.of(), Reason.DNS_TEMPORARY_FAILURE);
+                    }
+                    case Rcode.REFUSED -> {
+                        return new Answer(owner, List.of(), Reason.DNS_REFUSED);
+                    }
+                    case Rcode.NOERROR -> { }
+                    default -> {
+                        return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+                    }
+                }
+                answer = reply.getSection(Section.ANSWER);
             }
-            List<Record> matching = new ArrayList<>();
-            List<Record> other = new ArrayList<>();
+            if (answer.size() > MAX_ANSWER_RECORDS) {
+                return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+            }
+            List<Record> matching = null;
             Name alias = null;
-            for (Record record : reply.getSectionArray(Section.ANSWER)) {
-                if (record.getDClass() != DClass.IN) {
+            boolean other = false;
+            for (Record record : answer) {
+                if (record == null || record.getDClass() != DClass.IN) {
                     return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
                 }
                 if (!record.getName().equals(owner)) {
-                    other.add(record);
+                    if (!seen.contains(record.getName())) {
+                        other = true;
+                    }
                 } else if (record instanceof CNAMERecord cname) {
                     if (alias != null || !cname.getTarget().isAbsolute() || cname.getTarget().equals(Name.root)) {
                         return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
@@ -198,42 +257,62 @@ public class DnsLookupService {
                 } else if (record.getType() != type || !validRecord(record, type)) {
                     return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
                 } else {
+                    if (matching == null) {
+                        matching = new ArrayList<>();
+                    }
                     matching.add(record);
                     if (type == Type.MX && matching.size() > MAX_MX_RECORDS) {
                         return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
                     }
                 }
             }
-            final Name resolvedAlias = alias;
-            if ((alias == null && !other.isEmpty()) || (alias != null && (!matching.isEmpty()
-                    || other.stream().anyMatch(record -> !record.getName().equals(resolvedAlias))))) {
-                return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
-            }
-            if (alias == null) {
-                // An empty NOERROR answer with a referral is not evidence of a missing route.
-                if (reply.getHeader().getCount(Section.AUTHORITY) > 0
-                        && !hasNegativeAuthority(reply)) {
+            if (alias != null) {
+                if (matching != null) {
                     return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
                 }
-                return new Answer(owner, matching, null);
+                boolean targetPresent = false;
+                for (Record record : answer) {
+                    if (record.getName().equals(alias)) {
+                        targetPresent = true;
+                        break;
+                    }
+                }
+                if (other && !targetPresent) {
+                    return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+                }
+                if (targetPresent) {
+                    inline = answer;
+                }
+                owner = alias;
+                continue;
             }
-            owner = alias;
+            if (other) {
+                return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+            }
+            // An empty NOERROR answer with a referral is not evidence of a missing route.
+            if (reply != null && reply.getHeader().getCount(Section.AUTHORITY) > 0
+                    && !hasNegativeAuthority(reply)) {
+                return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+            }
+            return new Answer(owner, matching == null ? List.of() : matching, null);
         }
     }
 
     private static boolean validRecord(Record record, int type) {
         return switch (type) {
             case Type.MX -> record instanceof MXRecord;
-            case Type.A -> record instanceof ARecord address && address.getAddress() != null
-                    && !address.getAddress().isAnyLocalAddress() && !address.getAddress().isMulticastAddress();
-            case Type.AAAA -> record instanceof AAAARecord address && address.getAddress() != null
-                    && !address.getAddress().isAnyLocalAddress() && !address.getAddress().isMulticastAddress();
+            case Type.A -> record instanceof ARecord address && usable(address.getAddress());
+            case Type.AAAA -> record instanceof AAAARecord address && usable(address.getAddress());
             default -> false;
         };
     }
 
+    private static boolean usable(InetAddress address) {
+        return address != null && !address.isAnyLocalAddress() && !address.isMulticastAddress();
+    }
+
     private static boolean hasNegativeAuthority(Message reply) {
-        for (Record record : reply.getSectionArray(Section.AUTHORITY)) {
+        for (Record record : reply.getSection(Section.AUTHORITY)) {
             if (record.getType() == Type.SOA) {
                 return true;
             }
@@ -241,41 +320,16 @@ public class DnsLookupService {
         return false;
     }
 
-    private static boolean validDomain(String domain) {
-        if (domain == null || domain.isEmpty() || domain.length() > 254) {
-            return false;
-        }
-        int last = domain.endsWith(".") ? domain.length() - 1 : domain.length();
-        if (last == 0 || last > 253) {
-            return false;
-        }
-        int labelLength = 0;
-        for (int i = 0; i < last; i++) {
-            char c = domain.charAt(i);
-            if (c == '.') {
-                if (labelLength == 0 || labelLength > 63 || domain.charAt(i - 1) == '-') {
-                    return false;
-                }
-                labelLength = 0;
-            } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-                    || (c >= '0' && c <= '9') || (c == '-' && labelLength > 0)) {
-                labelLength++;
-            } else {
-                return false;
-            }
-        }
-        return labelLength > 0 && labelLength <= 63 && domain.charAt(last - 1) != '-';
-    }
-
     private static DnsObservation observation(String domain, Reason reason, List<MxHost> hosts) {
         Outcome outcome = switch (reason) {
-            case MX_PRESENT, MULTIPLE_MX, IMPLICIT_MX -> Outcome.MAIL_ROUTE;
+            case MX_PRESENT, MULTIPLE_MX, MX_TARGET_PARTIAL, IMPLICIT_MX -> Outcome.MAIL_ROUTE;
             case NULL_MX -> Outcome.MAIL_NOT_ACCEPTED;
-            case DOMAIN_NOT_FOUND, NO_MAIL_ROUTE -> Outcome.NO_MAIL_ROUTE;
+            case DOMAIN_NOT_FOUND, NO_MAIL_ROUTE, MX_TARGET_NO_ADDRESS -> Outcome.NO_MAIL_ROUTE;
             default -> Outcome.UNKNOWN;
         };
         boolean retryable = reason == Reason.DNS_TEMPORARY_FAILURE || reason == Reason.DNS_REFUSED
-                || reason == Reason.DNS_RESOLVER_UNAVAILABLE;
+                || reason == Reason.DNS_RESOLVER_UNAVAILABLE || reason == Reason.MX_TARGET_TEMPORARY_FAILURE
+                || reason == Reason.DNS_QUERY_BUDGET_EXCEEDED || reason == Reason.MX_TARGET_PARTIAL;
         return new DnsObservation(outcome, reason, domain, hosts, retryable, Instant.now());
     }
 
