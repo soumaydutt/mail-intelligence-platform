@@ -119,7 +119,13 @@ Engine 3 is not part of `/api/email/validate`: the API never connects to SMTP, a
 
 The fixture sends EHLO (or one HELO fallback), MAIL FROM, RCPT TO and, when possible, QUIT. It never sends DATA, message content or random catch-all probes. A 250/251 response means recipient acceptance at that stage only, not mailbox existence or delivery; there is no boolean mailbox-success adapter. Only a contextual 550 5.1.1 is negative recipient evidence; bare 550, policy failures and timeouts remain uncertain. Catch-all status is unknown.
 
-Engine 2 routing/API changes are present here through `origin/main` at `aa1c865`. This checkout's API remains passive; integrating SMTP into it requires separate authorization and egress approval.
+Engine 3 is present in `origin/main` after PR #4. The API remains passive; activating SMTP requires separate authorization and egress approval.
+
+## Internal evidence classification
+
+`EvidenceClassifier` combines a local syntax result, optional `DnsObservation`, and optional SMTP evidence into an immutable `ClassificationResult`. Categories are `INVALID_SYNTAX`, `DOMAIN_NOT_FOUND` (DNS NXDOMAIN), `MAIL_NOT_ACCEPTED` (sole Null MX), `ROUTE_AVAILABLE` (usable DNS route), `ROUTE_UNCERTAIN` (absent, unusable, conflicting, or unknown route evidence), `RECIPIENT_ACCEPTED_UNCONFIRMED` (RCPT 250/251), and `RECIPIENT_REJECTED` (RCPT 550 with enhanced 5.1.1 and matching reason). Neither an MX route nor SMTP acceptance proves mailbox existence or delivery. A missing DNS route is not the same as NXDOMAIN; ambiguous or temporary SMTP refusals never become recipient rejection.
+
+Evidence retains syntax and DNS reason codes, canonical DNS domain and MX hosts, source and observation times. The optional SMTP snapshot retains typed outcome/reason, reply and sanitized enhanced code, but not host, address, reply text, or transcript. Results include a safe diagnostic, reason code, computation time, and retryability. No TTL or expiry policy exists, so evidence freshness is unknown. This is an internal, in-memory milestone (D-024), not the Phase 5 local product in [PLAN.md](PLAN.md). The public API and MySQL history still return `INVALID` only for invalid syntax and `UNVERIFIED` for every format-valid input, without new fields or SMTP calls.
 
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.
