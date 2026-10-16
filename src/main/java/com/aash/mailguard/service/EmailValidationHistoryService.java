@@ -53,6 +53,13 @@ public class EmailValidationHistoryService {
         response.setStatus("UNVERIFIED");
         response.setMessage(switch (observation.reason()) {
             case MX_PRESENT, MULTIPLE_MX -> "MX record observed; mailbox not verified.";
+            case MX_TARGET_PARTIAL -> "MX route observed with an unresolved target; mailbox not verified.";
+            case MX_TARGET_NO_ADDRESS -> "MX record observed without a usable target address; mailbox not verified.";
+            case MX_TARGET_TEMPORARY_FAILURE, MX_TARGET_UNCERTAIN ->
+                    "MX target address lookup unavailable; mailbox not verified.";
+            case DNS_QUERY_BUDGET_EXCEEDED -> observation.mxHosts().isEmpty()
+                    ? "DNS lookup unavailable; mailbox not verified."
+                    : "MX target address lookup unavailable; mailbox not verified.";
             case IMPLICIT_MX -> "Implicit address route observed; mailbox not verified.";
             case NULL_MX -> "Null MX declares mail not accepted; mailbox not verified.";
             case NO_MAIL_ROUTE, DOMAIN_NOT_FOUND -> "No MX record observed; mailbox not verified.";
