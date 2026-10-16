@@ -119,7 +119,7 @@ Engine 3 is not part of `/api/email/validate`: the API never connects to SMTP, a
 
 The fixture sends EHLO (or one HELO fallback), MAIL FROM, RCPT TO and, when possible, QUIT. It never sends DATA, message content or random catch-all probes. A 250/251 response means recipient acceptance at that stage only, not mailbox existence or delivery; there is no boolean mailbox-success adapter. Only a contextual 550 5.1.1 is negative recipient evidence; bare 550, policy failures and timeouts remain uncertain. Catch-all status is unknown.
 
-The finalized Engine 2 branch (`1367e9c`) is not integrated into this checkout. API and MX behavior described here reflects this checkout; a branch integration and production SMTP activation both require separate approval.
+Engine 2 routing/API changes are present here through `origin/main` at `aa1c865`. This checkout's API remains passive; integrating SMTP into it requires separate authorization and egress approval.
 
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.
