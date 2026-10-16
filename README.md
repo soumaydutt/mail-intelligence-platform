@@ -5,14 +5,14 @@
 ![MySQL](https://img.shields.io/badge/MySQL-8-blue?style=for-the-badge&logo=mysql)
 ![Swagger](https://img.shields.io/badge/Swagger-OpenAPI-green?style=for-the-badge&logo=swagger)
 
-MailGuard exposes a synchronous, passive email check: local format validation followed by one DNS MX observation. It does not verify a mailbox or send email.
+MailGuard exposes a synchronous, passive email check: local format validation followed by bounded DNS routing observation. It does not verify a mailbox or send email.
 
 This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The broader email intelligence architecture in [PLAN.md](PLAN.md) is planned, not implemented.
 
 ---
 ## ✨ Features
 - ✔ Email format validation
-- ✔ Domain extraction and MX observation using DNS
+- ✔ Domain extraction, MX advertisement, Null MX, and implicit A/AAAA routing observation
 - ✔ Explicit unknown DNS outcome; no SMTP connection
 - ✔ REST API built with Spring Boot
 - ✔ Swagger/OpenAPI documentation
@@ -57,7 +57,7 @@ http://localhost:8080/swagger-ui/index.html
 You can now test all available email validation APIs directly from Swagger UI.
 
 ## 📖 Usage
-MailGuard checks local email format, then observes DNS MX records for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
+MailGuard checks local email format, then observes DNS routing for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
 
 ## 📧 Email Validation
 ### Validate an Email Address
@@ -92,10 +92,26 @@ Response when an MX record is observed (example):
 }
 ```
 
-## 🌐 MX Record Lookup
-One DNS MX lookup reports `mxRecordFound=true` for a non-null MX, `false` for no MX/NXDOMAIN or a null MX, and `null` for timeout, server failure, or unparseable domain. A missing MX does not prove mailbox invalidity; an MX record does not prove mailbox existence.
+## 🌐 DNS Routing Observation
+The Engine 1 validator supplies a canonical ASCII domain. The DNS engine queries its absolute name for MX records. A sole priority-0 MX pointing to `.` explicitly declines mail ([RFC 7505](https://www.rfc-editor.org/rfc/rfc7505.html#section-3)). With no MX answer, it checks the domain's A and then AAAA for an implicit route. With MX records, it instead checks exchanger A/AAAA addresses in preference order and stops at the first usable target ([RFC 5321, §5.1](https://www.rfc-editor.org/rfc/rfc5321.html#section-5.1)). NXDOMAIN does not trigger implicit fallback. MX-target CNAMEs are outside RFC 5321's address-record rule and remain uncertain. DNS routing evidence does not prove an SMTP server accepts mail or that any mailbox exists.
 
-`status` is `INVALID` only for local format failures. Any format-valid input returns `UNVERIFIED`; `smtpVerified` is always `null`. The API performs no SMTP probe or email sending.
+| DNS observation | Internal outcome | `mxRecordFound` | Message |
+| --- | --- | --- | --- |
+| MX with a usable exchanger address | `MAIL_ROUTE` | `true` | `MX record observed; mailbox not verified.` |
+| Earlier exchanger failed, later MX target has an address | `MAIL_ROUTE` (degraded) | `true` | `MX route observed with an unresolved target; mailbox not verified.` |
+| MX target lookup failed temporarily; no usable target observed | `UNKNOWN` (retryable) | `true` | `MX target address lookup unavailable; mailbox not verified.` |
+| MX target has no A/AAAA; no usable target observed | `NO_MAIL_ROUTE` | `true` | `MX record observed without a usable target address; mailbox not verified.` |
+| MX target returned malformed data or CNAME | `UNKNOWN` | `true` | `MX target address lookup unavailable; mailbox not verified.` |
+| No MX, but the domain has a usable A/AAAA address | `MAIL_ROUTE` | `false` | `Implicit address route observed; mailbox not verified.` |
+| Sole Null MX | `MAIL_NOT_ACCEPTED` | `false` | `Null MX declares mail not accepted; mailbox not verified.` |
+| NXDOMAIN or no MX/A/AAAA route | `NO_MAIL_ROUTE` | `false` | `No MX record observed; mailbox not verified.` |
+| Initial MX lookup timeout, SERVFAIL, refusal, I/O or malformed answer | `UNKNOWN` | `null` | `DNS lookup unavailable; mailbox not verified.` |
+
+The nullable Boolean preserves the API and history schema: `true` means an MX was observed even if its target is unusable or uncertain, not that mail can be delivered. Internal `DnsObservation` contains outcome, reason, canonical domain, ordered MX preferences/hosts, retryability, and observation time. It is not persisted or returned in the API. `status` is `INVALID` only for local format failures. Every format-valid input remains `UNVERIFIED` with `smtpVerified=null`; no SMTP probe, outbound HTTP lookup, or email sending occurs.
+
+No DNS response is cached in this milestone: positive, negative, and transient results are each queried anew. TTL expiry and shared Valkey caching remain planned, not implemented. Production DNS uses a 2-second per-resolver timeout with one attempt per configured server and a 2-second overall retry window; in-flight requests cannot be canceled by that window. The service admits at most 16 concurrent DNS operations, 24 resolver queries per observation, eight alias hops, 32 MX records, and 128 answer records per response. Many MX targets can exhaust the query budget; internal `DNS_QUERY_BUDGET_EXCEEDED` then stays retryable `UNKNOWN`, preserving the same public Boolean and message as a failed target lookup. These bounds do not prove availability under load; no load benchmark or production DNS test has run.
+
+Address evidence currently rejects unspecified/wildcard and multicast IPs, but accepts loopback, private, link-local, unique-local IPv6, and other non-public or reserved ranges. It measures DNS address presence, not public reachability. Changing route classification would change existing API/history results and documentation-address fixtures; decide a public-address and egress policy before any future SMTP probe. `mxRecordFound=true` still means only that an ordinary MX was advertised, including a dangling exchanger with no address; it never means that route is usable.
 
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.

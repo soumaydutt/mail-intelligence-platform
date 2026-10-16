@@ -76,6 +76,8 @@ The agreed sequence does not fix CSV limits, normalization, reason-code taxonomy
 
 The approved Step 2 email syntax engine (D-021) is a focused milestone before the durable-core Phase 2 above. It changes syntax classification and domain normalization without adding the worker, PostgreSQL, CSV processing, or SMTP behavior.
 
+The approved Engine 2 DNS/MX engine (D-022) is a focused milestone after syntax, not the bulk/cache Phase 3 in this table. It adds bounded, injectable DNS routing evidence, including preference-ordered MX-target address checks, and legacy response mapping. Offline fixtures and a live H2 API against loopback DNS cover routing and uncertainty; typed evidence is not yet durable. PostgreSQL jobs, 15,000-row CSV, Valkey TTL caching, and optional SMTP are still unimplemented.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
