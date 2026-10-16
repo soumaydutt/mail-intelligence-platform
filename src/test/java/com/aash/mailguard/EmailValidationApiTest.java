@@ -146,6 +146,24 @@ class EmailValidationApiTest {
                 "DNS lookup unavailable; mailbox not verified.");
     }
 
+    @Test
+    void unresolvedMxTargetsRemainUnverifiedWithoutErasingObservedMx() throws Exception {
+        assertDnsResponse(Outcome.UNKNOWN, Reason.MX_TARGET_TEMPORARY_FAILURE, "mx-temp.test", true,
+                "MX target address lookup unavailable; mailbox not verified.");
+        assertDnsResponse(Outcome.MAIL_ROUTE, Reason.MX_TARGET_PARTIAL, "mx-partial.test", true,
+                "MX route observed with an unresolved target; mailbox not verified.");
+        assertDnsResponse(Outcome.NO_MAIL_ROUTE, Reason.MX_TARGET_NO_ADDRESS, "mx-no-address.test", true,
+                "MX record observed without a usable target address; mailbox not verified.");
+        assertDnsResponse(Outcome.UNKNOWN, Reason.MX_TARGET_UNCERTAIN, "mx-malformed.test", true,
+                "MX target address lookup unavailable; mailbox not verified.");
+    }
+
+    @Test
+    void exhaustedMxQueryBudgetKeepsLegacyResponseAndHistory() throws Exception {
+        assertDnsResponse(Outcome.UNKNOWN, Reason.DNS_QUERY_BUDGET_EXCEEDED, "mx-budget.test", true,
+                "MX target address lookup unavailable; mailbox not verified.");
+    }
+
 
     @Test
     void observedMxDoesNotTriggerSmtpOrClaimValidity() throws Exception {
@@ -480,13 +498,15 @@ class EmailValidationApiTest {
 
     private static DnsObservation observation(Outcome outcome, Reason reason, String domain) {
         List<DnsObservation.MxHost> mxHosts = switch (reason) {
-            case MX_PRESENT -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"));
-            case MULTIPLE_MX -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"),
+            case MX_PRESENT, MX_TARGET_TEMPORARY_FAILURE, MX_TARGET_NO_ADDRESS, MX_TARGET_UNCERTAIN,
+                    DNS_QUERY_BUDGET_EXCEEDED -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"));
+            case MULTIPLE_MX, MX_TARGET_PARTIAL -> List.of(new DnsObservation.MxHost(10, "mx1.example.test"),
                     new DnsObservation.MxHost(20, "mx2.example.test"));
             default -> List.of();
         };
         return new DnsObservation(outcome, reason, domain, mxHosts,
-                reason == Reason.DNS_TEMPORARY_FAILURE, Instant.parse("2026-01-01T00:00:00Z"));
+                reason == Reason.DNS_TEMPORARY_FAILURE || reason == Reason.MX_TARGET_TEMPORARY_FAILURE
+                        || reason == Reason.MX_TARGET_PARTIAL, Instant.parse("2026-01-01T00:00:00Z"));
     }
 
     private static String longTestDomain(int thirdLabelLength) {
