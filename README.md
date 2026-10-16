@@ -2,7 +2,7 @@
 ![Java](https://img.shields.io/badge/Java-21-orange?style=for-the-badge&logo=openjdk)
 ![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.1-green?style=for-the-badge&logo=springboot)
 ![Maven](https://img.shields.io/badge/Maven-Build-red?style=for-the-badge&logo=apachemaven)
-![MySQL](https://img.shields.io/badge/MySQL-8-blue?style=for-the-badge&logo=mysql)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue?style=for-the-badge&logo=postgresql)
 ![Swagger](https://img.shields.io/badge/Swagger-OpenAPI-green?style=for-the-badge&logo=swagger)
 
 MailGuard exposes a synchronous, passive email check: local format validation followed by bounded DNS routing observation. It does not verify a mailbox or send email.
@@ -16,7 +16,7 @@ This repository preserves the history and attribution of [the original MailGuard
 - ✔ Explicit unknown DNS outcome; no SMTP connection
 - ✔ REST API built with Spring Boot
 - ✔ Swagger/OpenAPI documentation
-- ✔ MySQL validation history
+- ✔ PostgreSQL validation history with versioned Flyway schema
 - ✔ Maven project
 
 ## 📦 Installation
@@ -32,21 +32,30 @@ Move into the project directory:
 cd mail-intelligence-platform
 ```
 
-Requires Java 21 and Maven. The current application needs a MySQL database with `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` set; tests use an isolated in-memory H2 database.
-Keep credentials in `DB_USERNAME` and `DB_PASSWORD`, not in `DB_URL`: the JDBC URL appears in startup logs. A disposable MySQL 8.4 container passed startup and two synthetic history writes; production data remains unverified.
+Requires Java 21, Maven, Docker with a running Linux daemon for PostgreSQL integration tests and local Compose, and a reachable PostgreSQL 17 database for the application. The production configuration requires `DB_URL`, `DB_USERNAME` and `DB_PASSWORD`; it has no implicit database fallback. Keep credentials in the username/password environment variables, not in `DB_URL`, which may appear in startup logs. The HTTP regression suite uses isolated H2 and disables Flyway; all PostgreSQL Testcontainers cases are mandatory and do not skip when Docker is unavailable. A first run needs Maven dependencies and `postgres:17-alpine` available locally; pre-cache both before disconnected use. No external DNS or SMTP is required for the tests.
 
-Build the project:
+On Windows PowerShell, start the **local-only** PostgreSQL service with a unique local password:
 
-```bash
-mvn clean install
+```powershell
+$env:DB_USERNAME = 'mailguard_local'
+$env:DB_PASSWORD = Read-Host 'Local PostgreSQL password'
+$env:DB_URL = 'jdbc:postgresql://127.0.0.1:5432/mailguard'
+docker compose up -d --wait
+mvn -B clean verify
+mvn -B spring-boot:run
 ```
+
+In another terminal, set the same `DB_USERNAME`/`DB_PASSWORD` for Compose and inspect the migration without printing stored addresses:
+
+```powershell
+docker compose exec -T postgres psql -U $env:DB_USERNAME -d mailguard -c 'SELECT version, success FROM flyway_schema_history ORDER BY installed_rank;'
+docker compose exec -T postgres psql -U $env:DB_USERNAME -d mailguard -c 'SELECT count(*) FROM email_validation_history;'
+```
+
+Stop the application with Ctrl+C, then run `docker compose stop` from a shell with the same Compose credentials. The named PostgreSQL volume and history survive restarts; do **not** run `docker compose down -v` against data you intend to keep. `DB_PORT` changes the localhost host port (default `5432`); update `DB_URL` to match. `DB_NAME` changes the initial database name (default `mailguard`). Compose is for local development, not production credential storage. On other shells, set equivalent environment variables before running the same commands.
 
 ## 🚀 Quick Start
-Start the Spring Boot application:
-
-```bash
-mvn spring-boot:run
-```
+Start the Spring Boot application only after PostgreSQL is healthy. Flyway creates V1 on an empty database before Hibernate validates the schema. An existing nonempty database without Flyway history is refused; Hibernate will not repair or drop tables. Production pool defaults: five maximum and one minimum idle connection; adjust `DB_POOL_MAX_SIZE`, `DB_POOL_MIN_IDLE`, `DB_POOL_CONNECTION_TIMEOUT_MS`, `DB_POOL_IDLE_TIMEOUT_MS` and `DB_POOL_MAX_LIFETIME_MS` only after measuring workload.
 
 Once the application starts successfully, open your browser:
 
@@ -55,6 +64,21 @@ http://localhost:8080/swagger-ui/index.html
 ```
 
 You can now test all available email validation APIs directly from Swagger UI.
+
+## PostgreSQL cutover and recovery
+
+Flyway V1 creates history only on a **new empty PostgreSQL database**. It neither reads nor imports MySQL rows; changing `DB_URL` alone does not migrate existing installations. Automatic Flyway baseline and clean are disabled, and Hibernate validates rather than altering production schema. Keep a previous MySQL application build and its data intact until a separate migration is approved.
+
+**Phase 6 supports fresh PostgreSQL 17 deployments only.** An installation with existing MySQL history is not eligible for a direct upgrade: this branch has no MySQL reader, import command, dual write or approved retention policy. No production MySQL inventory is available here; absence of a local MySQL container or connection does not prove deployed data is absent. Keep the old application and database until the owner confirms no rows need preservation or approves a separate rehearsed migration.
+
+1. Before changing an existing installation, freeze writes and obtain owner approval for address storage, access, retention and deletion. Record the actual MySQL DDL, row count, id range, null counts, charset/collation, status/message lengths, timestamp semantics and transaction isolation. Back up the complete MySQL database using an approved consistent snapshot tool; encrypt, restrict and **test a restore** in a separate environment. Do not put credentials or exported addresses in this repository.
+2. Provision a separate empty PostgreSQL staging database with no client traffic. Run the new application once to apply Flyway V1, then stop it before importing. Design and rehearse an explicit, audited transfer from the backed-up MySQL rows: preserve ids and original text, map nullable MySQL booleans to PostgreSQL booleans, validate UTF-8 and 255-character limits, and convert MySQL local timestamps to UTC instants **only after confirming their source timezone**. Reject or quarantine ambiguous/invalid rows rather than truncating, dropping or inventing data. This repository has no import script.
+3. Reset the PostgreSQL identity to follow imported ids. Reconcile row counts, null distributions and representative records against the backup; verify Flyway history and Hibernate validation, then back up the PostgreSQL result. Test the passive API against the staged database. Only then plan a controlled traffic/write cutover; do not assume MySQL's usual `REPEATABLE READ` behavior under PostgreSQL's default `READ COMMITTED`.
+4. Before any PostgreSQL writes, rollback means stop the new application and restart the preserved MySQL build against its unchanged database after checking its backup. **After PostgreSQL accepts writes, reverting directly to MySQL loses new records.** Pause writes, retain both snapshots and reconcile the delta or restore the PostgreSQL backup into a separate instance before any further cutover. Never delete a populated volume or run Flyway clean as a rollback.
+
+If MySQL rows must be preserved, the **proposed, not implemented** importer is a separately invoked, access-controlled tool. Rehearse it against a consistent, encrypted MySQL snapshot and a newly provisioned isolated PostgreSQL database after Flyway V1. Stream source rows by primary-key order into typed, batched inserts without logging addresses; preserve original ids and nullable values. Confirm MySQL `DATETIME` timezone, `utf8mb4` conversion, boolean encodings and 255-character bounds before mapping. Fail and roll back on duplicates, truncated text, unknown timezone or invalid rows. Compare counts, null distributions, id ranges and protected canonical row digests; reset and test identity generation, then restore the PostgreSQL snapshot to another disposable database and start Hibernate validation before cutover. Rehearse failed imports and a post-cutover write delta. Do not run this proposal against an existing database without explicit approval.
+
+The existing table retains full addresses without an approved retention/access policy; no public history-read endpoint is provided. Recent-history repository reads accept pagination and order by timestamp then id; an authorized caller must impose a page-size limit before exposing them. The classifier's typed DNS/SMTP observations are **not** persisted: it is not used by the live API, and authorization, retention, provenance and TTL are unresolved. D-025 documents an additive, privacy-preserving future schema. Phase 6 does not add jobs, CSV, Valkey, SMTP activation, a worker or a UI.
 
 ## 📖 Usage
 MailGuard checks local email format, then observes DNS routing for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
@@ -125,7 +149,7 @@ Engine 3 is present in `origin/main` after PR #4. The API remains passive; activ
 
 `EvidenceClassifier` combines a local syntax result, optional `DnsObservation`, and optional SMTP evidence into an immutable `ClassificationResult`. Categories are `INVALID_SYNTAX`, `DOMAIN_NOT_FOUND` (DNS NXDOMAIN), `MAIL_NOT_ACCEPTED` (sole Null MX), `ROUTE_AVAILABLE` (usable DNS route), `ROUTE_UNCERTAIN` (absent, unusable, conflicting, or unknown route evidence), `RECIPIENT_ACCEPTED_UNCONFIRMED` (RCPT 250/251), and `RECIPIENT_REJECTED` (RCPT 550 with enhanced 5.1.1 and matching reason). Neither an MX route nor SMTP acceptance proves mailbox existence or delivery. A missing DNS route is not the same as NXDOMAIN; ambiguous or temporary SMTP refusals never become recipient rejection.
 
-Evidence retains syntax and DNS reason codes, canonical DNS domain and MX hosts, source and observation times. The optional SMTP snapshot retains typed outcome/reason, reply and sanitized enhanced code, but not host, address, reply text, or transcript. Results include a safe diagnostic, reason code, computation time, and retryability. No TTL or expiry policy exists, so evidence freshness is unknown. This is an internal, in-memory milestone (D-024), not the Phase 5 local product in [PLAN.md](PLAN.md). The public API and MySQL history still return `INVALID` only for invalid syntax and `UNVERIFIED` for every format-valid input, without new fields or SMTP calls.
+Evidence retains syntax and DNS reason codes, canonical DNS domain and MX hosts, source and observation times. The optional SMTP snapshot retains typed outcome/reason, reply and sanitized enhanced code, but not host, address, reply text, or transcript. Results include a safe diagnostic, reason code, computation time, and retryability. No TTL or expiry policy exists, so evidence freshness is unknown. This is an internal, in-memory milestone (D-024), not the Phase 5 local product in [PLAN.md](PLAN.md). The public API and PostgreSQL history still return `INVALID` only for invalid syntax and `UNVERIFIED` for every format-valid input, without new fields or SMTP calls.
 
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.
@@ -152,7 +176,7 @@ The root Maven project contains the Spring Boot API in `src/main/java/com/aash/m
 - Java 21
 - Spring Boot 4
 - Spring Data JPA
-- MySQL
+- PostgreSQL 17 and Flyway
 - Maven
 - DNSJava
 - Swagger (OpenAPI)
