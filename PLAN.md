@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #1 safe baseline merged into main. Engine 1 syntax is implemented; finalized Engine 2 routing/API changes exist separately at `1367e9c` and are not integrated into this checkout. This branch contains an isolated Engine 3 loopback-fixture SMTP module, disabled by default and not called by the passive API. Production SMTP authorization, external egress and deployment remain unapproved. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md), [DECISIONS.md](DECISIONS.md), and [AGENTS.md](AGENTS.md).
+Status: PR #1, PR #2 and Engine 2 routing/API changes are merged into `origin/main` at `aa1c865`. This branch contains an isolated Engine 3 loopback-fixture SMTP module, disabled by default and not called by the passive API. Production SMTP authorization, external egress and deployment remain unapproved. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md), [DECISIONS.md](DECISIONS.md), and [AGENTS.md](AGENTS.md).
 
 ## Goals and current scope
 
@@ -76,7 +76,7 @@ The agreed sequence does not fix CSV limits, normalization, reason-code taxonomy
 
 The approved Step 2 email syntax engine (D-021) is a focused milestone before the durable-core Phase 2 above. It changes syntax classification and domain normalization without adding the worker, PostgreSQL, CSV processing, or SMTP behavior.
 
-The approved Engine 2 DNS/MX engine (D-022) is a focused milestone after syntax, not the bulk/cache Phase 3 in this table. It adds bounded, injectable DNS routing evidence, including preference-ordered MX-target address checks, and legacy response mapping. Offline fixtures and a live H2 API against loopback DNS cover routing and uncertainty; typed evidence is not yet durable. PostgreSQL jobs, 15,000-row CSV, Valkey TTL caching, and optional SMTP are still unimplemented.
+The approved Engine 2 DNS/MX engine (D-022) is merged into `origin/main`; it is a focused milestone after syntax, not the bulk/cache Phase 3 in this table. It adds bounded, injectable DNS routing evidence, including preference-ordered MX-target address checks, and legacy response mapping. Offline fixtures and a live H2 API against loopback DNS cover routing and uncertainty; typed evidence is not yet durable. PostgreSQL jobs, 15,000-row CSV, Valkey TTL caching, and production SMTP integration remain unimplemented.
 
 ## Testing strategy
 
