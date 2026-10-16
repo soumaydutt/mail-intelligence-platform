@@ -1,0 +1,6 @@
+package com.aash.mailguard.classification;
+
+public enum EvidenceClassification {
+    INVALID_SYNTAX, DOMAIN_NOT_FOUND, MAIL_NOT_ACCEPTED, ROUTE_AVAILABLE,
+    ROUTE_UNCERTAIN, RECIPIENT_ACCEPTED_UNCONFIRMED, RECIPIENT_REJECTED
+}
