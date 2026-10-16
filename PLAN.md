@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #1 through PR #4 are merged into `origin/main` at `9d81824`. This feature branch adds an internal evidence classifier without changing the passive API or enabling SMTP. Production SMTP authorization, external egress and deployment remain unapproved. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md), [DECISIONS.md](DECISIONS.md), and [AGENTS.md](AGENTS.md).
+Status: PR #1 through PR #5 are merged into `origin/main` at `858e051`. The `feature/postgresql-flyway-persistence` branch adds Flyway-owned PostgreSQL history and local database verification (D-025); a CI workflow is configured but has not run on GitHub. It does not implement worker/jobs, typed evidence storage, CSV, or the complete local product. Existing production MySQL data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md), [DECISIONS.md](DECISIONS.md), and [AGENTS.md](AGENTS.md).
 
 ## Goals and current scope
 
@@ -80,6 +80,10 @@ The approved Engine 2 DNS/MX engine (D-022) is merged into `origin/main`; it is 
 
 The internal evidence classifier (D-024) is a focused PR #5 milestone, not completion of Phase 5 local product above. It combines syntax, DNS, and optional fixture-only SMTP observations in memory; no typed-evidence persistence, new API fields, SMTP activation, worker, or UI is implied.
 
+The Phase 6 PostgreSQL persistence milestone (D-025) implements **only the history slice** of durable-core Phase 2: a fresh PostgreSQL 17 database, non-destructive Flyway V1, validated JPA mapping, nullable legacy fields, pageable recent-history reads, short save transactions, Testcontainers and local PostgreSQL Compose. An empty schema is required; this is not a MySQL data migration. An existing nonempty schema without Flyway history fails startup. Legacy MySQL data must be inventoried, backed up, mapped and reconciled with an explicitly approved import plan before switching an installation. Typed evidence is deferred: the classifier is not on the API path, and provenance/retention/authorization/freshness rules are not approved. A future additive schema can link versioned typed observations to a history or job id without duplicating addresses, preserve conflicts and real unknowns as evidence, and leave absent observations absent. Worker claims, fenced leases, retry/idempotent completion, independent worker startup, CSV, Valkey, SMTP policy, UI and full local Compose stack remain future work; do not mark Phase 2 or Phase 5 complete.
+
+Phase 6 release scope (D-026): verify the two existing POST routes over a running API and disposable PostgreSQL with an exact seven-field success contract, DB writes and no-write errors, real application-context restart, full-database dump/restore and fail-closed startup. A source-inspected schema or service-only call is not an HTTP end-to-end PASS. Fresh PostgreSQL-only is the supported deployment until an authorized MySQL inventory and migration rehearsal exists; production data and hosted CI remain separate gates.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
@@ -115,7 +119,7 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [x] Audit source, dependencies, tests, build, persistence, licensing; run existing tests safely (test failure recorded above).
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
 - [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
-- [ ] Phase 2 durable core (not started).
+- [ ] Phase 2 durable core (PostgreSQL/Flyway history-only Phase 6 locally verified; worker, jobs, evidence, legacy-data migration and restart recovery unimplemented).
 - [ ] Phase 3 bounded intelligence (not started).
 - [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
 - [ ] Phase 5 local product (not started).

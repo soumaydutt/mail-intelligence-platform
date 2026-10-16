@@ -42,6 +42,7 @@ import static org.mockito.Mockito.when;
         "spring.datasource.username=sa",
         "spring.datasource.password=",
         "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.flyway.enabled=false",
         "spring.jpa.show-sql=false",
         "spring.mvc.log-resolved-exception=true"
 })

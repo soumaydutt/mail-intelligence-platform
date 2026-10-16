@@ -1,11 +1,12 @@
 package com.aash.mailguard.entity;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Table;
 import jakarta.persistence.Id;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import org.hibernate.annotations.CreationTimestamp;
 
 @Entity
@@ -16,22 +17,30 @@ public class EmailValidationHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(length = 255)
     private String email;
 
+    @Column(length = 255)
     private String domain;
 
+    @Column(name = "format_valid")
     private Boolean formatValid;
 
+    @Column(name = "mx_record_found")
     private Boolean mxRecordFound;
 
+    @Column(name = "smtp_verified")
     private Boolean smtpVerified;
 
+    @Column(length = 255)
     private String status;
 
+    @Column(length = 255)
     private String message;
 
     @CreationTimestamp
-    private LocalDateTime createdAt;
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
 
     public EmailValidationHistory() {
 
@@ -45,11 +54,11 @@ public class EmailValidationHistory {
         this.email = email;
     }
 
-    public LocalDateTime getCreatedAt() {
+    public Instant getCreatedAt() {
         return createdAt;
     }
 
-    public void setCreatedAt(LocalDateTime createdAt) {
+    public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
     }
 
