@@ -113,6 +113,14 @@ No DNS response is cached in this milestone: positive, negative, and transient r
 
 Address evidence currently rejects unspecified/wildcard and multicast IPs, but accepts loopback, private, link-local, unique-local IPv6, and other non-public or reserved ranges. It measures DNS address presence, not public reachability. Changing route classification would change existing API/history results and documentation-address fixtures; decide a public-address and egress policy before any future SMTP probe. `mxRecordFound=true` still means only that an ordinary MX was advertised, including a dangling exchanger with no address; it never means that route is usable.
 
+## Isolated SMTP fixture engine
+
+Engine 3 is not part of `/api/email/validate`: the API never connects to SMTP, and `smtpVerified` remains `null`. Its default policy is disabled. Tests opt in with `SmtpVerificationPolicy.localOnly(port)`, which accepts only the exact numeric loopback addresses `127.0.0.1` or `::1` and the configured port. The transport pins that address without DNS resolution. External SMTP, hostnames, private network destinations and public API activation are unsupported; no production authorization or egress policy has been approved.
+
+The fixture sends EHLO (or one HELO fallback), MAIL FROM, RCPT TO and, when possible, QUIT. It never sends DATA, message content or random catch-all probes. A 250/251 response means recipient acceptance at that stage only, not mailbox existence or delivery; there is no boolean mailbox-success adapter. Only a contextual 550 5.1.1 is negative recipient evidence; bare 550, policy failures and timeouts remain uncertain. Catch-all status is unknown.
+
+The finalized Engine 2 branch (`1367e9c`) is not integrated into this checkout. API and MX behavior described here reflects this checkout; a branch integration and production SMTP activation both require separate approval.
+
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.
 

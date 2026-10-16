@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #1 safe baseline merged into main; Step 2 email syntax engine is implemented and locally verified on `feature/email-syntax-engine`, with PR #2 publication authorized but no merge approved. This syntax milestone is separate from Phase 2's unimplemented PostgreSQL/worker core. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md) for verified work, [DECISIONS.md](DECISIONS.md) for decisions, and [AGENTS.md](AGENTS.md) for contribution rules.
+Status: PR #1 safe baseline merged into main. Engine 1 syntax is implemented; finalized Engine 2 routing/API changes exist separately at `1367e9c` and are not integrated into this checkout. This branch contains an isolated Engine 3 loopback-fixture SMTP module, disabled by default and not called by the passive API. Production SMTP authorization, external egress and deployment remain unapproved. Disposable MySQL 8.4/Docker startup and synthetic history writes passed; production data and PII retention/access remain unverified. This plan describes the intended system, not the current implementation. See [PROGRESS.md](PROGRESS.md), [DECISIONS.md](DECISIONS.md), and [AGENTS.md](AGENTS.md).
 
 ## Goals and current scope
 
@@ -115,5 +115,5 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
 - [ ] Phase 2 durable core (not started).
 - [ ] Phase 3 bounded intelligence (not started).
-- [ ] Phase 4 optional SMTP (not started; requires explicit approval/policy).
+- [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
 - [ ] Phase 5 local product (not started).
