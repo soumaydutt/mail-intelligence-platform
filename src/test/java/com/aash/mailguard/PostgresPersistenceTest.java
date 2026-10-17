@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.hibernate.SessionFactory;
@@ -393,6 +394,37 @@ class PostgresPersistenceTest {
         } finally {
             jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
         }
+    }
+
+    @Test
+    void largeHistoryKeepsFirstAndLastPagesInIdOrder() {
+        int total = 10_000;
+        jdbc.batchUpdate(
+                "INSERT INTO email_validation_history (email, domain, status, format_valid, mx_record_found, created_at) "
+                        + "VALUES (?, 'scale.test', 'UNVERIFIED', true, true, TIMESTAMPTZ '2024-01-01 00:00:00+00')",
+                new org.springframework.jdbc.core.BatchPreparedStatementSetter() {
+                    @Override
+                    public void setValues(java.sql.PreparedStatement ps, int i) throws java.sql.SQLException {
+                        ps.setString(1, "scale" + i + "@scale.test");
+                    }
+
+                    @Override
+                    public int getBatchSize() {
+                        return total;
+                    }
+                }
+        );
+        assertEquals(total, repository.count());
+
+        var first = repository.findAllByOrderByCreatedAtDescIdDesc(PageRequest.of(0, 10));
+        assertEquals(IntStream.range(0, 10).mapToObj(i -> "scale" + (total - 1 - i) + "@scale.test").toList(),
+                first.getContent().stream().map(EmailValidationHistory::getEmail).toList());
+        assertTrue(first.hasNext());
+
+        var last = repository.findAllByOrderByCreatedAtDescIdDesc(PageRequest.of(total / 10 - 1, 10));
+        assertEquals(IntStream.range(0, 10).mapToObj(i -> "scale" + (9 - i) + "@scale.test").toList(),
+                last.getContent().stream().map(EmailValidationHistory::getEmail).toList());
+        assertFalse(last.hasNext());
     }
 
     private Long insertAt(String email, Timestamp createdAt) {
