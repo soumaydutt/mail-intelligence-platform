@@ -15,6 +15,12 @@ import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.boot.WebApplicationType;
@@ -143,6 +149,49 @@ class PostgresHttpEndToEndTest {
         assertRow(after);
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM email_validation_history", Integer.class));
         verifyNoInteractions(dns);
+    }
+
+    @Test
+    void concurrentHttpRequestsPersistAccuratelyWithoutDroppingRows() throws Exception {
+        when(dns.lookup("concurrent.test")).thenReturn(observation(DnsObservation.Outcome.MAIL_ROUTE,
+                DnsObservation.Reason.MX_PRESENT, "concurrent.test"));
+
+        int concurrency = 25;
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(concurrency);
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<Future<HttpResponse<String>>> futures = new ArrayList<>();
+
+        for (int i = 0; i < concurrency; i++) {
+            final int idx = i;
+            futures.add(executor.submit(() -> {
+                startLatch.await();
+                try {
+                    return post("/api/email/validate",
+                            JSON.writeValueAsString(Map.of("email", "user" + idx + "@concurrent.test")));
+                } finally {
+                    doneLatch.countDown();
+                }
+            }));
+        }
+
+        try {
+            startLatch.countDown();
+            assertTrue(doneLatch.await(30, TimeUnit.SECONDS));
+            for (int i = 0; i < futures.size(); i++) {
+                HttpResponse<String> response = futures.get(i).get();
+                assertEquals(200, response.statusCode());
+                JsonNode body = JSON.readTree(response.body());
+                assertEquals("user" + i + "@concurrent.test", body.get("email").asText());
+                assertEquals("UNVERIFIED", body.get("status").asText());
+                assertTrue(body.get("formatValid").asBoolean());
+                assertTrue(body.get("mxRecordFound").asBoolean());
+            }
+            assertEquals(concurrency, jdbc.queryForObject("SELECT count(*) FROM email_validation_history", Integer.class));
+            assertEquals(concurrency, jdbc.queryForObject("SELECT count(DISTINCT email) FROM email_validation_history", Integer.class));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private ConfigurableApplicationContext startApplication() {
