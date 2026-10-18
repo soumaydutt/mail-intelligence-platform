@@ -20,12 +20,12 @@ Alternatives: Server-rendered pages or no UI.
 Trade-offs/consequences: Separate toolchain and contract testing; do not duplicate outcome policy in the client.
 
 ## D-003 — PostgreSQL plus Flyway as durable store
-Status: **PostgreSQL history/Flyway V1 implemented and locally verified in Phase 6; owner waived import of two irrelevant MySQL records (D-027).** Jobs and typed evidence are not yet durable.
+Status: **PostgreSQL history/Flyway V1 merged in Phase 6; additive Flyway V2 single-address jobs implemented and locally verified in Phase 7.** Typed evidence is not yet durable; owner waived import of two irrelevant MySQL records (D-027).
 Decision: PostgreSQL owns durable history, results, and jobs; Flyway owns forward-only schema changes.
 Rationale: Transactional job coordination and reproducible schemas are preferable to implicit updates.
 Alternatives: Keep MySQL with ORM schema updates; store durable jobs in Valkey.
 Trade-offs/consequences: Forward PostgreSQL migrations require explicit indexes and transaction design; startup must refuse unknown schema drift rather than silently mutate it. Cross-engine MySQL import is not required for this installation.
-Pre-Phase 1 audit evidence: `pom.xml:52-56` included MySQL only; `EmailValidationHistory.java` and `EmailValidationHistoryRepository.java` defined the original table/repository; `application.properties:7` set `ddl-auto=update`. No Flyway migrations, PostgreSQL driver, or data inventory was present at audit time. D-025 records the current history-only migration boundary.
+Pre-Phase 1 audit evidence: `pom.xml:52-56` included MySQL only; `EmailValidationHistory.java` and `EmailValidationHistoryRepository.java` defined the original table/repository; `application.properties:7` set `ddl-auto=update`. No Flyway migrations, PostgreSQL driver, or data inventory was present at audit time. D-025 records the Phase 6 history-only migration boundary; D-028 records the later job addition.
 
 ## D-004 — Valkey for DNS cache and rate limiting
 Status: **Accepted direction; provisional TTL/failure policy** until evidence and load requirements are defined.
@@ -35,7 +35,7 @@ Alternatives: In-process cache/limiter or PostgreSQL-backed limit state.
 Trade-offs/consequences: Extra local service and outage behavior to define; never confuse cached lookup failures with absent MX. Rate-limit failure policy must be explicit.
 
 ## D-005 — Modular monolith with independent API and worker processes
-Status: **Accepted direction; provisional module layout** until API/worker contracts are designed.
+Status: **Independent API and headless worker processes locally verified in Phase 7**; frontend and further module layout remain provisional.
 Decision: Keep one codebase and shared domain model, with separate runnable entry points and worker-only job execution.
 Rationale: Operational separation of latency-sensitive HTTP and background work without distributed-service overhead.
 Alternatives: One process for both roles or microservices.
@@ -43,14 +43,14 @@ Trade-offs/consequences: Shared releases and DB schema, but independent resource
 Audit evidence: Only `MailGuardApplication.java` boots the current app; `EmailValidationHistoryService.validate` performs DNS, synchronous SMTP, and persistence within a request. No separate worker exists.
 
 ## D-006 — PostgreSQL-backed durable jobs
-Status: **Accepted direction; claim algorithm agreed in D-015; provisional lease/retry constants and schema** pending workload definition.
+Status: **Single-address PostgreSQL jobs, fenced claims and bounded retries locally implemented in Phase 7 (D-028)**; typed evidence and bulk-import ownership remain unimplemented.
 Decision: Transactionally claim PostgreSQL jobs with fenced leases; use bounded retries/backoff, reclaim expired leases, and idempotent evidence/result persistence. Assume at-least-once execution, not exactly-once side effects.
 Rationale: Survive worker crashes without losing work or treating duplicate execution as a new result.
 Alternatives: In-memory queue, Valkey queue, or broker.
 Trade-offs/consequences: Claim/index/locking complexity and careful lease renewal; prove concurrent claims, restart recovery, and duplicate-write safety with PostgreSQL Testcontainers.
 
 ## D-007 — Bounded virtual-thread concurrency
-Status: **Accepted direction; provisional limits** until measured.
+Status: **Twenty-worker default and 1–50 synthetic benchmark locally verified in Phase 7**; production DNS capacity and upstream policy remain unmeasured.
 Decision: Use Java virtual threads for blocking I/O only under admission limits and explicit DNS/SMTP/DB timeouts.
 Rationale: Simple blocking code without permitting unlimited external or database work.
 Alternatives: Unbounded virtual threads, fixed platform-thread pool, or reactive rewrite.
@@ -110,7 +110,7 @@ Trade-offs/consequences: Staging and row/result mapping use storage and require 
 Audit evidence: Only `POST /api/email/validate` and `/api/email/test` exist in `EmailValidationHistoryController.java`; no import/export or tenant model exists.
 
 ## D-014 — Single-address compatibility beside asynchronous bulk jobs
-Status: **Single-address cutover approved and implemented in D-018; asynchronous bulk routes still proposed and unimplemented**.
+Status: **Synchronous single-address route preserved and a separate Phase 7 single-address job route locally implemented**; asynchronous CSV import/progress/export routes remain proposed and unimplemented.
 Decision: Keep the existing single-address route while adding separate asynchronous import/progress/results/export routes; do not turn `/api/email/validate` into a job-creation endpoint without versioned or approved contract migration. Remove automatic SMTP from its normal path as the accepted safety direction in D-009, and explicitly document/test the resulting response/status changes.
 Rationale: Bulk requests need durable progress and retries; established single-address callers must not silently receive a job ID instead of their existing response.
 Alternatives: Issue 15,000 synchronous validation requests, replace the existing route in place, or keep unsafe SMTP for wire compatibility.
@@ -118,7 +118,7 @@ Trade-offs/consequences: Two entry paths temporarily share classification rules;
 Audit evidence (before D-018): `EmailValidationHistoryService.validate` synchronously performed DNS, SMTP and persistence; `EmailValidationResponse` returned nullable booleans plus status/message. D-018 replaced probing with a passive response in place.
 
 ## D-015 — Fenced PostgreSQL leases rather than a broker
-Status: **Accepted claim and completion flow; unimplemented**, with lease/backoff/failure limits provisional until tested.
+Status: **Fenced claims and transactional seven-field result/history completion locally implemented in Phase 7 (D-028)**; typed stage evidence remains unimplemented.
 Decision: Claim due/expired rows with PostgreSQL `FOR UPDATE SKIP LOCKED` in short transactions; increment a lease token on claim. Execute bounded verification work outside the claim transaction. Only the current, unexpired token may atomically write evidence, reason-coded result and terminal job state, or write a transient failure observation with its retry state. Reject stale writes; bound attempts/backoff and make duplicate result keys unique.
 Rationale: At-least-once execution needs crash recovery and prevention of stale workers overwriting newer results. Valkey remains disposable.
 Alternatives: Long DB transactions across DNS I/O, an in-memory/Valkey queue, or a separate broker with cross-store consistency.
@@ -126,7 +126,7 @@ Trade-offs/consequences: Polling, indexes, clock/lease policy and claim contenti
 Audit evidence: `EmailValidationHistoryRepository` is a simple `JpaRepository` without a job entity; the source tree has no worker or migration.
 
 ## D-016 — Incremental root-layout migration
-Status: **Proposed; unimplemented**.
+Status: **Root Maven layout retained with separate API and headless worker startup locally verified in Phase 7**; a frontend and multi-module move remain proposed.
 Decision: Keep the existing Maven root and `com.aash.mailguard` entry point while carving feature packages inside the backend; move to `backend/` or a Maven multi-module build only after a runnable split needs it. Add separate API/worker entry points at the durable-core phase; build the frontend against verified contracts.
 Rationale: A directory reshuffle before any behavior or isolated tests exist raises review and regression cost without delivering a usable product.
 Alternatives: Rebuild everything into the sample repository tree first or split into microservices.
@@ -220,3 +220,15 @@ Decision: The previous MySQL database contains two irrelevant records, per its o
 PostgreSQL safety: V1 runs on a new empty database; later startups validate and retain a database already migrated by V1. Never reset or silently baseline a populated PostgreSQL database. Fail startup on unknown schema or incompatible Flyway history, and investigate with a backup. Do not edit the applied V1 without a compatibility assessment.
 Trade-offs: The two records excluded from the new installation remain in the untouched old MySQL database. This removes cross-engine migration as a Phase 6 gate, not production access/retention or backup/restore responsibilities.
 Verification (2026-10-17): A pristine disposable PostgreSQL 17 database had zero public tables before startup; the packaged API applied Flyway V1, returned the existing seven-field HTTP contract and persisted a synthetic row. A second application startup retained the same table OID and row, with no additional migration, then accepted another write. With a fixed host-port mapping, PostgreSQL restarted while the API stayed running; the first subsequent POST returned 200 and both rows survived. `mvn -B clean verify` passed 204 tests on the current worktree, including two pre-existing uncommitted tests not in PR #6. GitHub `verify` succeeded for `5757331`. No MySQL resources or applied Flyway migration were changed; see PROGRESS.md for the transient smoke-harness port error and limits.
+
+## D-028 — Phase 7 durable single-address job pipeline
+Status: **Implemented and locally verified on `feature/durable-async-jobs`**; the owner reports a second independent audit returned READY FOR PR and authorized publication, but production deployment controls and the broader bulk/evidence milestones remain open.
+Decision: Keep the synchronous seven-field validation routes intact. Flyway V2 adds `verification_job` plus a nullable unique `email_validation_history.job_id` without changing V1 or existing history rows. `POST /api/jobs` stores one address and returns HTTP 202/Location; `GET` returns bounded state and only completed results; `DELETE` cancels outstanding work. A nonempty shared `X-Job-API-Key` is required for every job route. The optional globally unique idempotency key reuses the original job only when the SHA-256 fingerprint of the exact submitted email matches; a different email conflicts. PostgreSQL serializes admissions with a transaction advisory lock and caps persisted PENDING/RUNNING/RETRY rows at 20,000 by default, returning HTTP 429 at the cap.
+Execution: Worker startup is opt-in and independently headless; default in-flight virtual-thread limit is 20, DNS retains its 16-observation bound, and the database pool defaults to five. `FOR UPDATE SKIP LOCKED` claims due or expired rows in short PostgreSQL transactions, increments a monotonically fenced token and sets a database-clock lease. The default 30-second lease is renewed every 10 seconds; a missed expiry permits reclaim. Syntax/DNS runs outside transactions. Only the current owner/token with an unexpired lease can atomically commit the existing seven-field result, `COMPLETED` state and one unique linked history row. Temporary DNS outcomes become durable RETRY with 1/2/4-second exponential steps plus up to 500 ms deterministic per-job jitter, capped by three attempts; exhaustion becomes FAILED without fabricating `INVALID`. A crash on the final claimed attempt eventually becomes `FAILED` with `LEASE_EXPIRED`. Database constraints and a trigger prevent terminal updates; cancellation competes with completion under the same row lock. Shutdown stops new claims and waits up to ten seconds before interrupting in-flight tasks. Worker logs use aggregate counters, not addresses or exception payloads.
+Trade-offs and boundaries: PostgreSQL is authoritative; no broker or Valkey queue is needed for this single-address slice. Reclaims can repeat DNS work, not the committed history/result. The job and history tables store full addresses, and the idempotency key remains plaintext; no typed DNS/SMTP evidence is stored. One shared key grants access to all jobs, the synchronous routes still lack job-key protection, and no retention, tenant authorization, production TLS or rate policy is implemented. Do not deploy the new job API publicly before those policies are approved. Synthetic 200-job throughput does not establish 15,000-row CSV or production DNS capacity.
+Verification (2026-10-18): `mvn -B clean test`, `mvn -B clean verify`, and `mvn -B package` each passed 226 tests with zero failures/errors and one opt-in benchmark skip. PostgreSQL 17 tests cover V1-to-V2 upgrade, two-instance claims, fencing, retry/restart, cancellation, transactional history and outage recovery. The opt-in benchmark passed one case at concurrency 1/5/10/20/50; a packaged API persisted PENDING, a separately launched headless jar completed an invalid-syntax job, and a restarted API returned INVALID and replayed the same ID with exactly one linked history row. No old MySQL or populated production database was changed.
+
+## D-029 — Phase 7 audit remediation: cancellation, identity and retention boundary
+Status: **Implemented and verified locally for cancellation and key enforcement; retention/ownership remain an approval gate**. This does not authorize production use or alter D-028's single-principal scope.
+Decision: Cancel only PENDING, RUNNING or RETRY with a guarded PostgreSQL update. A following read may report success only for immutable CANCELLED; COMPLETED and FAILED return HTTP 409 and unknown IDs return 404. Concurrent cancellations both return HTTP 200 while cancellation versus completion has one terminal winner. Require the nonempty shared API key on POST, GET and DELETE, but do not claim tenant isolation; all holders can access all jobs. Idempotency compares SHA-256 of the decoded email string's exact UTF-8 bytes, without lowercasing even the DNS domain; key reuse with any changed bytes conflicts. Preserving local-part case avoids assuming providers treat local parts as equivalent.
+Data boundary: Cancellation does not erase stored email, completed result, history or plaintext globally scoped idempotency keys. No automatic retention is implemented. `email_validation_history.job_id` is a nullable unique non-cascading foreign key, so any approved later purge must select eligible terminal jobs, remove linked history first and then remove jobs in one transaction; synchronous history with null `job_id` needs a separate policy. Set retention periods, legal holds, backup expiry, deletion audit and post-purge key reuse rules before building a bounded cleanup process. Owner-scoped authorization, TLS and public rate controls require separate approval.

@@ -81,9 +81,9 @@ class PostgresPersistenceTest {
 
     @Test
     void freshFlywaySchemaValidatesAndRepeatedMigrationsPreserveRows() {
-        assertEquals("1", flyway.info().current().getVersion().getVersion());
-        assertEquals(1, jdbc.queryForObject(
-                "SELECT count(*) FROM flyway_schema_history WHERE version = '1' AND success", Integer.class));
+        assertEquals("2", flyway.info().current().getVersion().getVersion());
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2') AND success", Integer.class));
         assertEquals("timestamp with time zone", jdbc.queryForObject(
                 "SELECT data_type FROM information_schema.columns WHERE table_name = 'email_validation_history' "
                         + "AND column_name = 'created_at'", String.class));
@@ -102,6 +102,34 @@ class PostgresPersistenceTest {
             assertTrue(repository.existsById(id));
         }
     }
+    @Test
+    void populatedV1UpgradesToV2WithoutChangingHistoryOrRepeatingEitherMigration() {
+        String schema = "phase7_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE SCHEMA " + schema);
+        Flyway v1 = Flyway.configure()
+                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                .schemas(schema).createSchemas(false).target("1").load();
+        assertEquals(1, v1.migrate().migrationsExecuted);
+        Long id = jdbc.queryForObject("INSERT INTO " + schema + ".email_validation_history (email, status) "
+                + "VALUES ('upgraded@fixture.test', 'UNVERIFIED') RETURNING id", Long.class);
+        Long tableOid = jdbc.queryForObject("SELECT oid FROM pg_class WHERE oid = ?::regclass",
+                Long.class, schema + ".email_validation_history");
+
+        Flyway upgraded = Flyway.configure()
+                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                .schemas(schema).createSchemas(false).load();
+        assertEquals(1, upgraded.migrate().migrationsExecuted);
+        assertEquals("2", upgraded.info().current().getVersion().getVersion());
+        assertEquals(0, upgraded.migrate().migrationsExecuted);
+        assertEquals(tableOid, jdbc.queryForObject("SELECT oid FROM pg_class WHERE oid = ?::regclass",
+                Long.class, schema + ".email_validation_history"));
+        assertEquals("upgraded@fixture.test", jdbc.queryForObject(
+                "SELECT email FROM " + schema + ".email_validation_history WHERE id = ?", String.class, id));
+        assertNull(jdbc.queryForObject(
+                "SELECT job_id FROM " + schema + ".email_validation_history WHERE id = ?", UUID.class, id));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".verification_job", Integer.class));
+    }
+
 
     @Test
     void rejectsUntrackedNonemptySchemaWithoutBaseliningIt() {
@@ -302,10 +330,12 @@ class PostgresPersistenceTest {
         assertEquals(List.of(firstId, secondId), originalRows.stream().map(row -> row.get("id")).toList());
         assertEquals(firstTimestamp, originalRows.get(0).get("created_at"));
         assertEquals(secondTimestamp, originalRows.get(1).get("created_at"));
-        assertEquals(1, originalMigrations.size());
-        assertEquals("1", originalMigrations.get(0).get("version"));
+        assertEquals(2, originalMigrations.size());
+        assertEquals(List.of("1", "2"), originalMigrations.stream().map(row -> row.get("version")).toList());
         assertNotNull(originalMigrations.get(0).get("checksum"));
+        assertNotNull(originalMigrations.get(1).get("checksum"));
         assertEquals(true, originalMigrations.get(0).get("success"));
+        assertEquals(true, originalMigrations.get(1).get("success"));
         assertEquals(true, originalSequence.get("is_called"));
 
         String restoreDb = "mailguard_restore_" + UUID.randomUUID().toString().replace("-", "");
@@ -336,7 +366,7 @@ class PostgresPersistenceTest {
                             "--spring.jpa.hibernate.ddl-auto=validate")) {
                 JdbcTemplate restoredJdbc = restored.getBean(JdbcTemplate.class);
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
-                assertEquals(1, restoredJdbc.queryForObject(
+                assertEquals(2, restoredJdbc.queryForObject(
                         "SELECT count(*) FROM flyway_schema_history", Integer.class));
                 assertEquals(originalRows, restoredJdbc.queryForList(rowsSql));
                 assertEquals(originalSequence, restoredJdbc.queryForMap(
@@ -359,7 +389,7 @@ class PostgresPersistenceTest {
                 assertTrue(restoredRepository.existsById(firstId));
                 assertTrue(restoredRepository.existsById(secondId));
                 assertEquals(3, restoredRepository.count());
-                assertEquals("1", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
+                assertEquals("2", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
             }
         } finally {
