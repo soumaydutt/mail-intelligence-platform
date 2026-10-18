@@ -112,6 +112,28 @@ Idempotency uses **byte-exact identity of the decoded email string encoded as UT
 
 **Retention status:** There is no automated expiration or deletion. `verification_job.email`, completed `result_email`, linked validation-history rows and plaintext idempotency keys persist; backups can retain the same personal data. A cancelled job is still stored, and `DELETE /api/jobs/<uuid>` does not delete it. The nullable unique `email_validation_history.job_id` is a foreign key without cascading deletion: removing a job while linked history exists would violate the constraint. A later operator-approved policy must set retention periods and legal-hold rules, restrict deletion to eligible terminal jobs, remove linked history **before** its job in one transaction, handle synchronous history rows with null `job_id` separately, and coordinate backup expiry plus idempotency-key reuse after removal. Use bounded, auditable batches without logging addresses; do not enable a scheduled purge before policy approval. The opt-in synthetic benchmark is `mvn -B "-Djobs.benchmark=true" "-Dtest=JobBenchmarkTest" test`; it does not measure external DNS or 15,000-row CSV throughput.
 
+## Streaming CSV imports (Phase 8)
+
+Run the same API and headless worker as above, backed by the same PostgreSQL database. Every import route requires the nonempty `X-Job-API-Key`; this is one trusted principal, **not** tenant isolation. Use TLS and private network access. The existing synchronous routes and single-address job API are unchanged.
+
+```powershell
+$headers = @{ 'X-Job-API-Key' = $env:JOBS_API_KEY }
+$import = curl.exe -sS -H "X-Job-API-Key: $env:JOBS_API_KEY" -F "file=@contacts.csv;type=text/csv" http://127.0.0.1:8080/api/imports | ConvertFrom-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/imports/$($import.id)" -Headers $headers
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/imports/$($import.id)/results?after=0&limit=100" -Headers $headers
+curl.exe -sS -H "X-Job-API-Key: $env:JOBS_API_KEY" "http://127.0.0.1:8080/api/imports/$($import.id)/export" -o results.csv
+```
+
+`POST /api/imports` accepts one multipart part named `file`, with a `.csv` filename and `text/csv` UTF-8 content type. The CSV needs one `email` header, case-insensitive; other columns are ignored. UTF-8 BOM, LF/CRLF, quoted commas, escaped quotes and multiline fields are supported. Successful staging returns HTTP 202, `{ "id": "<uuid>" }` and `Location: /api/imports/<uuid>`. Empty files with only a header complete with zero rows. Oversized, missing, blank, or malformed cells retain their input ordinal and a safe rejection reason where possible. Email syntax-invalid values within the 255-character storage bound still get jobs and `INVALID` results. Addresses deduplicate **only within each import**, by exact decoded text; duplicates link to the first row's job. Repeating an upload creates a new import and new jobs; no import-level `Idempotency-Key` is supported.
+
+`GET /api/imports/<uuid>` reports durable state, `inputRows`, accepted/duplicate/rejected counts, pending/running/retry/completed/failed/cancelled unique-job counts, timestamps and a safe failure code. Active imports derive progress from rows and jobs; terminal imports read counters captured in the same database transaction as their terminal state. `INGESTING` is not eligible for promotion. Only `READY` and `PROCESSING` imports feed jobs; `COMPLETED` includes exhausted failures but no pending work. Invalid CSV can retain previously committed rows in `FAILED`, with **no jobs promoted**. A disconnected or crashed upload remains `INGESTING` until the worker marks it `FAILED` after 60 minutes without a batch write; no automatic retry or deletion occurs. `GET /api/imports/<uuid>/results?after=0&limit=100` returns an ordered JSON page (limit 1–500); `after` is the last seen ordinal. `GET /api/imports/<uuid>/export` streams a UTF-8 CSV with one row per original ordinal, including rejected and duplicate rows; results can be partial before completion. The export prefixes spreadsheet-formula candidates with an apostrophe and quotes/escapes every non-null cell. Avoid treating exported values as trusted input.
+
+`DELETE /api/imports/<uuid>` cancels pending, running, retrying and not-yet-promoted work. It does **not** erase stored addresses, history or already-completed results. Repeated cancellation returns 200; an already-completed or failed import returns 409, an unknown ID 404. Running jobs obey Phase 7 lease fencing; a completion committed before cancellation stays completed. The worker promotes at most 250 unique rows per database transaction, under Phase 7's shared `JOBS_MAX_OUTSTANDING` cap; no DNS runs inside promotion transactions. Separate worker processes can safely compete. `JOBS_WORKER_CONCURRENCY` still bounds active DNS work; bulk admission does not bypass it.
+
+Defaults: CSV file at most 16 MiB (`IMPORTS_MAX_UPLOAD_BYTES`), multipart request at most 17 MiB, 50,000 rows (`IMPORTS_MAX_ROWS`), 2,048 decoded characters per record (`IMPORTS_MAX_RECORD_CHARS`), 255 characters per stored email (`IMPORTS_MAX_EMAIL_CHARS`), 250 staged/promoted rows per batch (`IMPORTS_BATCH_SIZE`), two simultaneous multipart parses per API instance (`IMPORTS_MAX_CONCURRENT_UPLOADS`), results/export fetch page 500 (`IMPORTS_RESULTS_PAGE_SIZE`), 60-minute stale-ingest timeout (`IMPORTS_STALE_MINUTES`), and promoter poll interval 500 ms (`IMPORTS_WORKER_POLL_MILLIS`). Spring servlet multipart caps remain fixed at 16/17 MiB; raising application byte caps alone does not raise servlet limits. Rejected uploads return a sanitized error; a server-side permit returns 429 when busy. Temp multipart files follow servlet cleanup; upload permits are local to each API process. CSV addresses, job results and linked history persist indefinitely until an approved retention and deletion policy exists; do not upload personal lists to a public deployment.
+
+Run the opt-in disposable PostgreSQL 17 workloads with `mvn -B "-Dimports.benchmark=true" "-Dtest=BulkBenchmarkTest" test`. They ingest 15,000 and 40,000 distinct synthetic invalid-syntax rows over loopback HTTP, complete them through the headless worker, and stream ordered CSV exports. Reported promotion time includes ingestion; database growth is measured against each run's starting size. These runs do not establish external DNS capacity or production throughput.
+
 ## 📧 Email Validation
 ### Validate an Email Address
 
@@ -201,6 +223,11 @@ http://localhost:8080
 | POST | `/api/jobs` | Submit a durable job (shared API key required) |
 | GET | `/api/jobs/{id}` | Read a job and completed result (shared API key required) |
 | DELETE | `/api/jobs/{id}` | Cancel outstanding work (shared API key required) |
+| POST | `/api/imports` | Stage a bounded CSV upload (shared API key required) |
+| GET | `/api/imports/{id}` | Read durable import progress (shared API key required) |
+| GET | `/api/imports/{id}/results` | Read ordered paged rows (shared API key required) |
+| GET | `/api/imports/{id}/export` | Stream ordered CSV results (shared API key required) |
+| DELETE | `/api/imports/{id}` | Cancel unprocessed rows and linked jobs (shared API key required) |
 
 ## 📂 Project Structure
 The root Maven project contains the Spring Boot API in `src/main/java/com/aash/mailguard` and offline tests in `src/test/java`.
