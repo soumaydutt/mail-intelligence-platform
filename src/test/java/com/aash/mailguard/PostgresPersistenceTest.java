@@ -81,9 +81,9 @@ class PostgresPersistenceTest {
 
     @Test
     void freshFlywaySchemaValidatesAndRepeatedMigrationsPreserveRows() {
-        assertEquals("2", flyway.info().current().getVersion().getVersion());
-        assertEquals(2, jdbc.queryForObject(
-                "SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2') AND success", Integer.class));
+        assertEquals("4", flyway.info().current().getVersion().getVersion());
+        assertEquals(4, jdbc.queryForObject(
+                "SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2', '3', '4') AND success", Integer.class));
         assertEquals("timestamp with time zone", jdbc.queryForObject(
                 "SELECT data_type FROM information_schema.columns WHERE table_name = 'email_validation_history' "
                         + "AND column_name = 'created_at'", String.class));
@@ -103,8 +103,8 @@ class PostgresPersistenceTest {
         }
     }
     @Test
-    void populatedV1UpgradesToV2WithoutChangingHistoryOrRepeatingEitherMigration() {
-        String schema = "phase7_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+    void populatedV1UpgradesThroughV4WithoutChangingHistoryOrRepeatingMigrations() {
+        String schema = "phase8_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.execute("CREATE SCHEMA " + schema);
         Flyway v1 = Flyway.configure()
                 .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
@@ -118,8 +118,8 @@ class PostgresPersistenceTest {
         Flyway upgraded = Flyway.configure()
                 .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
                 .schemas(schema).createSchemas(false).load();
-        assertEquals(1, upgraded.migrate().migrationsExecuted);
-        assertEquals("2", upgraded.info().current().getVersion().getVersion());
+        assertEquals(3, upgraded.migrate().migrationsExecuted);
+        assertEquals("4", upgraded.info().current().getVersion().getVersion());
         assertEquals(0, upgraded.migrate().migrationsExecuted);
         assertEquals(tableOid, jdbc.queryForObject("SELECT oid FROM pg_class WHERE oid = ?::regclass",
                 Long.class, schema + ".email_validation_history"));
@@ -128,8 +128,83 @@ class PostgresPersistenceTest {
         assertNull(jdbc.queryForObject(
                 "SELECT job_id FROM " + schema + ".email_validation_history WHERE id = ?", UUID.class, id));
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".verification_job", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".import_batch", Integer.class));
     }
 
+
+    @Test
+    void populatedV2JobsAndLinkedHistorySurviveV4Upgrade() {
+        String schema = "phase8_jobs_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE SCHEMA " + schema);
+        try {
+            Flyway v2 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).target("2").load();
+            assertEquals(2, v2.migrate().migrationsExecuted);
+            UUID job = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".verification_job "
+                    + "(id, email, request_fingerprint) VALUES (?, ?, decode(repeat('0', 64), 'hex'))",
+                    job, "preserved@fixture.test");
+            Long history = jdbc.queryForObject("INSERT INTO " + schema
+                    + ".email_validation_history (job_id, email) VALUES (?, ?) RETURNING id",
+                    Long.class, job, "preserved@fixture.test");
+            Flyway v4 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).load();
+            assertEquals(2, v4.migrate().migrationsExecuted);
+            assertEquals(0, v4.migrate().migrationsExecuted);
+            assertEquals("PENDING", jdbc.queryForObject(
+                    "SELECT state FROM " + schema + ".verification_job WHERE id = ?", String.class, job));
+            assertEquals(job, jdbc.queryForObject(
+                    "SELECT job_id FROM " + schema + ".email_validation_history WHERE id = ?", UUID.class, history));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".import_batch", Integer.class));
+        } finally {
+            jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void populatedV3TerminalBatchGetsProgressSnapshotDuringV4Upgrade() {
+        String schema = "phase8_terminal_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE SCHEMA " + schema);
+        try {
+            Flyway v3 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).target("3").load();
+            assertEquals(3, v3.migrate().migrationsExecuted);
+            UUID id = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".import_batch(id, state, finished_at, failure_code) "
+                    + "VALUES (?, 'FAILED', clock_timestamp(), 'INVALID_CSV')", id);
+            jdbc.update("INSERT INTO " + schema + ".import_row(import_id, ordinal, row_state, email) "
+                    + "VALUES (?, 1, 'ACCEPTED', 'legacy-invalid')", id);
+            jdbc.update("INSERT INTO " + schema + ".import_row(import_id, ordinal, row_state, duplicate_of, reason) "
+                    + "VALUES (?, 2, 'DUPLICATE', 1, 'DUPLICATE')", id);
+            jdbc.update("INSERT INTO " + schema + ".import_row(import_id, ordinal, row_state, reason) "
+                    + "VALUES (?, 3, 'REJECTED', 'EMPTY_EMAIL')", id);
+
+            Flyway v4 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).load();
+            assertEquals(1, v4.migrate().migrationsExecuted);
+            assertEquals(List.of(3L, 1L, 1L, 1L, 0L), jdbc.queryForObject(
+                    "SELECT input_rows, accepted_rows, duplicate_rows, rejected_rows, pending_rows "
+                            + "FROM " + schema + ".import_batch WHERE id = ?",
+                    (rs, row) -> List.of(rs.getLong(1), rs.getLong(2), rs.getLong(3),
+                            rs.getLong(4), rs.getLong(5)), id));
+            assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE " + schema
+                    + ".import_batch SET updated_at = clock_timestamp() WHERE id = ?", id));
+            UUID later = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".import_batch(id) VALUES (?)", later);
+            jdbc.update("INSERT INTO " + schema + ".import_row(import_id, ordinal, row_state, email) "
+                    + "VALUES (?, 1, 'ACCEPTED', 'later-invalid')", later);
+            jdbc.update("UPDATE " + schema + ".import_batch SET state = 'FAILED', "
+                    + "failure_code = 'INVALID_CSV', finished_at = clock_timestamp() WHERE id = ?", later);
+            assertEquals(1L, jdbc.queryForObject(
+                    "SELECT input_rows FROM " + schema + ".import_batch WHERE id = ?", Long.class, later));
+        } finally {
+            jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
+        }
+    }
 
     @Test
     void rejectsUntrackedNonemptySchemaWithoutBaseliningIt() {
@@ -330,12 +405,10 @@ class PostgresPersistenceTest {
         assertEquals(List.of(firstId, secondId), originalRows.stream().map(row -> row.get("id")).toList());
         assertEquals(firstTimestamp, originalRows.get(0).get("created_at"));
         assertEquals(secondTimestamp, originalRows.get(1).get("created_at"));
-        assertEquals(2, originalMigrations.size());
-        assertEquals(List.of("1", "2"), originalMigrations.stream().map(row -> row.get("version")).toList());
-        assertNotNull(originalMigrations.get(0).get("checksum"));
-        assertNotNull(originalMigrations.get(1).get("checksum"));
-        assertEquals(true, originalMigrations.get(0).get("success"));
-        assertEquals(true, originalMigrations.get(1).get("success"));
+        assertEquals(4, originalMigrations.size());
+        assertEquals(List.of("1", "2", "3", "4"), originalMigrations.stream().map(row -> row.get("version")).toList());
+        assertTrue(originalMigrations.stream().allMatch(row -> row.get("checksum") != null));
+        assertTrue(originalMigrations.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))));
         assertEquals(true, originalSequence.get("is_called"));
 
         String restoreDb = "mailguard_restore_" + UUID.randomUUID().toString().replace("-", "");
@@ -366,7 +439,7 @@ class PostgresPersistenceTest {
                             "--spring.jpa.hibernate.ddl-auto=validate")) {
                 JdbcTemplate restoredJdbc = restored.getBean(JdbcTemplate.class);
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
-                assertEquals(2, restoredJdbc.queryForObject(
+                assertEquals(4, restoredJdbc.queryForObject(
                         "SELECT count(*) FROM flyway_schema_history", Integer.class));
                 assertEquals(originalRows, restoredJdbc.queryForList(rowsSql));
                 assertEquals(originalSequence, restoredJdbc.queryForMap(
@@ -389,7 +462,7 @@ class PostgresPersistenceTest {
                 assertTrue(restoredRepository.existsById(firstId));
                 assertTrue(restoredRepository.existsById(secondId));
                 assertEquals(3, restoredRepository.count());
-                assertEquals("2", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
+                assertEquals("4", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
             }
         } finally {
