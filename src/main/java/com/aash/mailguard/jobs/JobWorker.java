@@ -108,6 +108,7 @@ public class JobWorker {
             try {
                 result = validation.compute(request);
             } catch (RuntimeException e) {
+                work.committing = true;
                 if (store.fail(claim, "VALIDATION_ERROR")) {
                     failed.increment();
                 } else {
@@ -118,6 +119,7 @@ public class JobWorker {
             if (Thread.currentThread().isInterrupted()) {
                 return;
             }
+            work.committing = true;
             if (result.retryable()) {
                 long power = 1L << Math.min(claim.attempts() - 1, 6);
                 long jitter = Math.floorMod(claim.id().getLeastSignificantBits() ^ claim.token(), 501);
@@ -146,7 +148,8 @@ public class JobWorker {
     private void renew() {
         for (Active work : active.values()) {
             try {
-                if (!store.heartbeat(work.claim, lease) && work.thread != null) {
+                // A committed terminal write makes heartbeat fail before its worker sees the commit.
+                if (!store.heartbeat(work.claim, lease) && work.thread != null && !work.committing) {
                     work.thread.interrupt();
                 }
             } catch (RuntimeException e) {
@@ -183,6 +186,7 @@ public class JobWorker {
     private static final class Active {
         private final JobStore.Claim claim;
         private volatile Thread thread;
+        private volatile boolean committing;
 
         private Active(JobStore.Claim claim) {
             this.claim = claim;
