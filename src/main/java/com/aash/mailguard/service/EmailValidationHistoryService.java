@@ -27,7 +27,15 @@ public class EmailValidationHistoryService {
         this.dnsLookup=dnsLookup;
     }
     public EmailValidationResponse validate(EmailValidationRequest request) {
+        EmailValidationResponse response = compute(request).response();
+        saveHistory(response);
+        return response;
+    }
 
+    public record Computation(EmailValidationResponse response, boolean retryable) {
+    }
+
+    public Computation compute(EmailValidationRequest request) {
         String email = request.getEmail();
 
         EmailValidationResponse response = new EmailValidationResponse();
@@ -40,8 +48,7 @@ public class EmailValidationHistoryService {
         if (!syntax.valid()){
             response.setStatus("INVALID");
             response.setMessage("Invalid email format");
-            saveHistory(response);
-            return response;
+            return new Computation(response, false);
         }
 
 
@@ -65,9 +72,7 @@ public class EmailValidationHistoryService {
             case NO_MAIL_ROUTE, DOMAIN_NOT_FOUND -> "No MX record observed; mailbox not verified.";
             default -> "DNS lookup unavailable; mailbox not verified.";
         });
-        saveHistory(response);
-
-        return response;
+        return new Computation(response, observation.retryable());
     }
 
     private void saveHistory(EmailValidationResponse response) {
