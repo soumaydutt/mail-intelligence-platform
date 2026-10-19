@@ -1,9 +1,11 @@
 package com.aash.mailguard.exception;
 
 import com.aash.mailguard.jobs.JobStore;
+import com.aash.mailguard.delivery.DeliveryEvidenceService;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.multipart.MultipartException;
@@ -23,12 +25,25 @@ public class GlobalExceptionHandler {
         String path = request.getRequestURI();
         boolean jobRoute = path.equals("/api/jobs") || path.startsWith("/api/jobs/");
         boolean importRoute = path.equals("/api/imports") || path.startsWith("/api/imports/");
-        boolean protectedRoute = jobRoute || importRoute;
+        boolean eventRoute = path.equals("/api/delivery-events") || path.startsWith("/api/delivery-events/");
+        boolean evidenceRoute = path.equals("/api/delivery-evidence/lookup");
+        boolean suppressionRoute = path.equals("/api/suppressions") || path.startsWith("/api/suppressions/");
+        boolean deliveryRoute = eventRoute || evidenceRoute || suppressionRoute;
+        boolean protectedRoute = jobRoute || importRoute || deliveryRoute;
         HttpStatus status;
         if (jobRoute && ex instanceof JobStore.QueueFull) {
             status = HttpStatus.TOO_MANY_REQUESTS;
         } else if (jobRoute && ex instanceof JobStore.IdempotencyConflict) {
             status = HttpStatus.CONFLICT;
+        } else if (deliveryRoute && ex instanceof DeliveryEvidenceService.InvalidInput) {
+            status = HttpStatus.BAD_REQUEST;
+        } else if (deliveryRoute && ex instanceof DeliveryEvidenceService.Conflict) {
+            status = HttpStatus.CONFLICT;
+        } else if (deliveryRoute && ex instanceof DeliveryEvidenceService.NotFound) {
+            status = HttpStatus.NOT_FOUND;
+        } else if (deliveryRoute && (ex instanceof IOException
+                || ex instanceof org.apache.tomcat.util.http.InvalidParameterException)) {
+            status = HttpStatus.BAD_REQUEST;
         } else if (protectedRoute && ex instanceof ResponseStatusException responseStatus) {
             status = HttpStatus.valueOf(responseStatus.getStatusCode().value());
         } else if (protectedRoute && ex instanceof org.springframework.web.ErrorResponse webError) {
@@ -47,6 +62,7 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> "Unauthorized";
             case NOT_FOUND -> "Not found";
             case CONFLICT -> "Conflict";
+            case CONTENT_TOO_LARGE, PAYLOAD_TOO_LARGE -> "Request too large";
             case TOO_MANY_REQUESTS -> importRoute ? "Upload limit reached" : "Job backlog is full";
             case INTERNAL_SERVER_ERROR -> "Internal server error";
             default -> protectedRoute ? "Request failed" : "Internal server error";
@@ -54,7 +70,11 @@ public class GlobalExceptionHandler {
         errorResponse.setTimestamp(LocalDateTime.now().toString());
         errorResponse.setStatus(status.value());
         errorResponse.setPath(jobRoute ? "/api/jobs" : importRoute ? "/api/imports"
+                : eventRoute ? "/api/delivery-events" : evidenceRoute ? "/api/delivery-evidence/lookup"
+                : suppressionRoute ? "/api/suppressions"
                 : path.equals("/api/email/validate") || path.equals("/api/email/test") ? path : "/");
-        return new ResponseEntity<>(errorResponse, status);
+        return deliveryRoute
+                ? ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store").body(errorResponse)
+                : new ResponseEntity<>(errorResponse, status);
     }
 }
