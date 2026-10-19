@@ -70,6 +70,47 @@ class DeliveryEvidenceStoreTest {
     }
 
     @Test
+    void fiveTypesAndStatusesHaveIndependentHistoricalAndSuppressionSemantics() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        assertEquals("NONE", evidence.lookup("none@example.test").freshness());
+        assertFalse(evidence.lookup("none@example.test").suppressed());
+        var uncertain = evidence.ingest(event("bounce@example.test", EventType.HARD_BOUNCE, "b1", now, "5.1.0"));
+        assertEquals("UNCERTAIN_BOUNCE", evidence.lookup("bounce@example.test").interpretation());
+        assertFalse(evidence.lookup("bounce@example.test").suppressed());
+        assertEquals(0, countSuppression(uncertain.id()));
+        var badStatus = evidence.ingest(event("bounce@example.test", EventType.HARD_BOUNCE, "b2", now.plus(1, ChronoUnit.SECONDS), "unknown"));
+        assertEquals(0, countSuppression(badStatus.id()));
+        assertNull(jdbc.queryForObject("SELECT enhanced_status_code FROM delivery_event WHERE id = ?",
+                String.class, badStatus.id()));
+        assertEquals(32, jdbc.queryForObject("SELECT octet_length(status_fingerprint) FROM delivery_event WHERE id = ?",
+                Integer.class, badStatus.id()));
+        var hard = evidence.ingest(event("bounce@example.test", EventType.HARD_BOUNCE, "b3", now.plus(2, ChronoUnit.SECONDS), "5.1.1"));
+        assertEquals("RECIPIENT_HARD_BOUNCE", evidence.lookup("bounce@example.test").interpretation());
+        assertTrue(evidence.lookup("bounce@example.test").suppressed());
+        assertEquals(1, countSuppression(hard.id()));
+        evidence.ingest(event("bounce@example.test", EventType.DELIVERED, "b4", now.plus(3, ChronoUnit.SECONDS), null));
+        assertEquals("HISTORICAL_DELIVERY", evidence.lookup("bounce@example.test").interpretation());
+        assertTrue(evidence.lookup("bounce@example.test").suppressed()); // Delivery never lifts a complaint or bounce.
+        evidence.ingest(event("soft@example.test", EventType.SOFT_BOUNCE, "soft", now, "4.2.2"));
+        assertEquals("TRANSIENT_BOUNCE", evidence.lookup("soft@example.test").interpretation());
+        assertFalse(evidence.lookup("soft@example.test").suppressed());
+        evidence.ingest(event("soft@example.test", EventType.SOFT_BOUNCE, "soft-other", now.plus(1, ChronoUnit.SECONDS), "5.1.1"));
+        assertEquals("UNCERTAIN_BOUNCE", evidence.lookup("soft@example.test").interpretation());
+        var complaint = evidence.ingest(event("complaint@example.test", EventType.COMPLAINT, "c1", now, null));
+        var unsubscribed = evidence.ingest(event("unsub@example.test", EventType.UNSUBSCRIBED, "u1", now, null));
+        assertTrue(evidence.lookup("complaint@example.test").suppressed());
+        assertTrue(evidence.lookup("unsub@example.test").suppressed());
+        assertEquals(1, countSuppression(complaint.id()));
+        assertEquals(1, countSuppression(unsubscribed.id()));
+        evidence.ingest(event("unsub@example.test", EventType.DELIVERED, "u2", now.plus(1, ChronoUnit.SECONDS), null));
+        assertEquals("HISTORICAL_DELIVERY", evidence.lookup("unsub@example.test").interpretation());
+        assertTrue(evidence.lookup("unsub@example.test").suppressed());
+        assertEquals("ADMIN_JSON", evidence.lookup("complaint@example.test").sourceType());
+        assertEquals("fixture-provider", evidence.lookup("complaint@example.test").sourceIdentifier());
+        assertEquals(9, jdbc.queryForObject("SELECT count(*) FROM delivery_event", Integer.class));
+    }
+
+    @Test
     void idempotencyRequiresExactImmutablePayloadAndRejectsInvalidInputs() {
         Instant at = Instant.now().truncatedTo(ChronoUnit.MICROS);
         EventInput original = event("Exact@EXAMPLE.test", EventType.HARD_BOUNCE, "same", at, "5.1.1");
@@ -125,6 +166,17 @@ class DeliveryEvidenceStoreTest {
         DeliveryEvidenceService withoutSource = new DeliveryEvidenceService(jdbc, transactionManager, validator, "", 30);
         assertThrows(DeliveryEvidenceService.InvalidInput.class, () ->
                 withoutSource.ingest(event("audit@example.test", EventType.DELIVERED, "no-source", at, null)));
+    }
+
+    @Test
+    void idnDomainSharesAddressIdentityWithoutFoldingLocalPart() {
+        Instant at = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID id = evidence.ingest(event("\"Case@Local\"@BÜCHER.Example", EventType.COMPLAINT, "unicode", at, null)).id();
+        assertEquals(id, evidence.lookup("\"Case@Local\"@xn--bcher-kva.example").eventId());
+        assertTrue(evidence.lookup("\"Case@Local\"@XN--BCHER-KVA.EXAMPLE").suppressed());
+        assertFalse(evidence.lookup("\"case@Local\"@bücher.example").available());
+        assertEquals("\"Case@Local\"@xn--bcher-kva.example", jdbc.queryForObject(
+                "SELECT email_key FROM delivery_event WHERE id = ?", String.class, id));
     }
 
     private int countSuppression(UUID eventId) {
