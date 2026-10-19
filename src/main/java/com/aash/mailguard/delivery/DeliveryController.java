@@ -31,6 +31,7 @@ public class DeliveryController {
     private static final int MAX_BODY_BYTES = 8192;
     private static final Set<String> EVENT_FIELDS = Set.of(
             "email", "eventType", "externalEventId", "occurredAt", "enhancedStatusCode");
+    private static final Set<String> EMAIL_FIELDS = Set.of("email");
     private static final Pattern EXTERNAL_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]*");
     private static final Pattern ENHANCED_CODE = Pattern.compile("[!-?A-~]+");
     private final DeliveryEvidenceService evidence;
@@ -74,6 +75,13 @@ public class DeliveryController {
         var result = evidence.ingest(new EventInput(email, eventType, externalId, occurredAt, code));
         return ResponseEntity.status(result.reused() ? HttpStatus.OK : HttpStatus.CREATED)
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").body(result);
+    }
+    @PostMapping("/delivery-evidence/lookup")
+    public ResponseEntity<DeliveryEvidenceService.Snapshot> lookup(HttpServletRequest request,
+            @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) throws IOException {
+        authenticate(suppliedKey);
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(evidence.lookup(text(body(request, EMAIL_FIELDS), "email", 255)));
     }
     private void authenticate(String suppliedKey) {
         if (apiKey.length == 0 || suppliedKey == null || !MessageDigest.isEqual(
