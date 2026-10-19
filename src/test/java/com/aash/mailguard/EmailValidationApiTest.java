@@ -3,6 +3,7 @@ package com.aash.mailguard;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.aash.mailguard.delivery.DeliveryEvidenceService;
 import com.aash.mailguard.dns.DnsLookupService;
 import com.aash.mailguard.dns.DnsObservation;
 import com.aash.mailguard.dns.DnsObservation.Outcome;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver;
@@ -44,6 +46,7 @@ import static org.mockito.Mockito.when;
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "spring.flyway.enabled=false",
         "spring.jpa.show-sql=false",
+        "jobs.api-key=synthetic-history-key",
         "spring.mvc.log-resolved-exception=true"
 })
 class EmailValidationApiTest {
@@ -60,6 +63,8 @@ class EmailValidationApiTest {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     @MockitoBean
     DnsLookupService dnsLookup;
+    @MockitoBean
+    DeliveryEvidenceService historical;
     @BeforeEach
     void clearHistory() {
         resolvedErrors = new ListAppender<>();
@@ -91,6 +96,23 @@ class EmailValidationApiTest {
         }
         assertEquals(1, repository.count());
         verifyNoInteractions(dnsLookup);
+    }
+
+    @Test
+    void invalidSyntaxSkipsAuthorizedHistoricalLookupAndPreservesLegacyFields() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .header("X-Job-API-Key", "synthetic-history-key")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"invalid\"}")).build();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            JsonNode result = objectMapper.readTree(response.body());
+            assertEquals("INVALID", result.get("status").asText());
+            assertFalse(result.has("historicalEvidence"));
+        }
+        assertEquals(1, repository.count());
+        verifyNoInteractions(historical, dnsLookup);
     }
 
     @Test
@@ -437,6 +459,28 @@ class EmailValidationApiTest {
             assertFalse(response.body().contains("test-sentinel-secret"));
         }
         assertEquals(0, repository.count());
+    }
+
+    @Test
+    void authorizedHistoricalLookupOutageKeepsPassiveValidationAndShowsUncertainty() throws Exception {
+        when(dnsLookup.lookup("fixture.test")).thenReturn(
+                observation(Outcome.MAIL_ROUTE, Reason.MX_PRESENT, "fixture.test"));
+        when(historical.lookup("a@fixture.test"))
+                .thenThrow(new DataAccessResourceFailureException("test-sentinel-private-event"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/email/validate"))
+                .header("Content-Type", "application/json")
+                .header("X-Job-API-Key", "synthetic-history-key")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"a@fixture.test\"}")).build();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            JsonNode result = objectMapper.readTree(response.body());
+            assertEquals("UNVERIFIED", result.get("status").asText());
+            assertEquals("UNAVAILABLE", result.get("historicalEvidence").get("freshness").asText());
+            assertTrue(result.get("historicalEvidence").get("suppressed").isNull());
+            assertFalse(response.body().contains("test-sentinel-private-event"));
+        }
+        assertEquals(1, repository.count());
     }
 
     @Test
