@@ -4,6 +4,8 @@ import com.aash.mailguard.validator.EmailFormatValidator;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -23,6 +25,19 @@ public class DeliveryEvidenceService {
     public record EventInput(String email, EventType eventType, String externalEventId,
                              Instant occurredAt, String enhancedStatusCode) { }
     public record Ingested(UUID id, boolean reused) { }
+    public record Snapshot(boolean available, UUID eventId, String eventType, String interpretation,
+                           Instant occurredAt, String sourceType, String sourceIdentifier,
+                           String freshness, Boolean suppressed, String suppressionReason,
+                           Instant observedAt, String limitation) {
+        public static Snapshot unavailable() {
+            return new Snapshot(false, null, null, null, null, null, null,
+                    "UNAVAILABLE", null, null, null, "Historical evidence unavailable.");
+        }
+        private static Snapshot none() {
+            return new Snapshot(false, null, null, null, null, null, null,
+                    "NONE", false, null, null, "No delivery event observed.");
+        }
+    }
     public static class InvalidInput extends RuntimeException {
         public InvalidInput() { super("Invalid delivery evidence input"); }
     }
@@ -30,6 +45,7 @@ public class DeliveryEvidenceService {
         public Conflict() { super("Delivery event identity conflict"); }
     }
     private static final Instant FIRST_REASONABLE_EVENT = Instant.parse("2000-01-01T00:00:00Z");
+    private static final String LIMITATION = "Historical observations do not prove current deliverability.";
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]*");
     private static final Pattern STATUS = Pattern.compile("[245]\\.[0-9]{1,3}\\.[0-9]{1,3}");
     private static final Pattern TRANSIENT_STATUS = Pattern.compile("4\\.[0-9]{1,3}\\.[0-9]{1,3}");
@@ -104,6 +120,42 @@ public class DeliveryEvidenceService {
             return new Ingested(id, false);
         }));
     }
+
+    public Snapshot lookup(String email) {
+        String key = emailKey(email);
+        // Both indexed lateral probes belong to one READ COMMITTED statement, not two racy reads.
+        return jdbc.query("""
+                SELECT e.id AS event_id, e.event_type, e.interpretation, e.occurred_at,
+                       e.source_type, e.source_identifier, e.observed_at, s.reason AS suppression_reason
+                FROM delivery_identity i
+                LEFT JOIN LATERAL (
+                    SELECT id, event_type, interpretation, occurred_at, source_type,
+                           source_identifier, observed_at
+                    FROM delivery_event
+                    WHERE email_key = i.email_key AND revoked_at IS NULL
+                    ORDER BY occurred_at DESC, observed_at DESC, id DESC LIMIT 1
+                ) e ON true
+                LEFT JOIN LATERAL (
+                    SELECT reason FROM delivery_suppression
+                    WHERE email_key = i.email_key AND lifted_at IS NULL
+                      AND effective_at <= clock_timestamp()
+                      AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                    ORDER BY effective_at DESC, id DESC LIMIT 1
+                ) s ON true
+                WHERE i.email_key = ?
+                """, (rs, row) -> {
+            UUID id = rs.getObject("event_id", UUID.class);
+            String suppressionReason = rs.getString("suppression_reason");
+            if (id == null && suppressionReason == null) return Snapshot.none();
+            Instant occurred = time(rs, "occurred_at");
+            return new Snapshot(true, id, rs.getString("event_type"), rs.getString("interpretation"),
+                    occurred, rs.getString("source_type"), rs.getString("source_identifier"),
+                    occurred == null ? "NONE" : occurred.isBefore(Instant.now().minus(freshDays, ChronoUnit.DAYS))
+                            ? "STALE" : "FRESH",
+                    suppressionReason != null, suppressionReason, time(rs, "observed_at"),
+                    occurred == null ? "No delivery event observed; suppression remains active." : LIMITATION);
+        }, key).stream().findFirst().orElseGet(Snapshot::none);
+    }
     private void lockIdentity(String key) {
         jdbc.update("INSERT INTO delivery_identity (email_key) VALUES (?) ON CONFLICT DO NOTHING", key);
         jdbc.query("SELECT email_key FROM delivery_identity WHERE email_key = ? FOR UPDATE",
@@ -116,6 +168,7 @@ public class DeliveryEvidenceService {
         if (!result.valid()) throw new InvalidInput();
         return email.substring(0, email.lastIndexOf('@') + 1) + result.domain();
     }
+
     private static byte[] fingerprint(String status) {
         if (status == null) return null;
         try {
@@ -149,5 +202,9 @@ public class DeliveryEvidenceService {
     private static boolean suppresses(EventType type, String interpretation) {
         return type == EventType.COMPLAINT || type == EventType.UNSUBSCRIBED
                 || "RECIPIENT_HARD_BOUNCE".equals(interpretation);
+    }
+    private static Instant time(ResultSet rs, String column) throws SQLException {
+        Timestamp value = rs.getTimestamp(column);
+        return value == null ? null : value.toInstant();
     }
 }
