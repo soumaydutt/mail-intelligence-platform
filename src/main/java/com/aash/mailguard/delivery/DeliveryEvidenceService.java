@@ -38,22 +38,31 @@ public class DeliveryEvidenceService {
                     "NONE", false, null, null, "No delivery event observed.");
         }
     }
+    public record Suppression(UUID id, String email, String reason, Instant effectiveAt,
+                              Instant expiresAt, boolean active, Instant liftedAt,
+                              String liftingReason, UUID sourceEventId) { }
     public static class InvalidInput extends RuntimeException {
         public InvalidInput() { super("Invalid delivery evidence input"); }
     }
     public static class Conflict extends RuntimeException {
         public Conflict() { super("Delivery event identity conflict"); }
     }
+    public static class NotFound extends RuntimeException {
+        public NotFound() { super("Delivery evidence not found"); }
+    }
+
     private static final Instant FIRST_REASONABLE_EVENT = Instant.parse("2000-01-01T00:00:00Z");
     private static final String LIMITATION = "Historical observations do not prove current deliverability.";
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]*");
     private static final Pattern STATUS = Pattern.compile("[245]\\.[0-9]{1,3}\\.[0-9]{1,3}");
+    private static final Pattern REASON = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final Pattern TRANSIENT_STATUS = Pattern.compile("4\\.[0-9]{1,3}\\.[0-9]{1,3}");
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final EmailFormatValidator validator;
     private final String sourceId;
     private final int freshDays;
+
     public DeliveryEvidenceService(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
                                    EmailFormatValidator validator,
                                    @Value("${delivery.source-id:}") String sourceId,
@@ -67,6 +76,7 @@ public class DeliveryEvidenceService {
         this.sourceId = sourceId;
         this.freshDays = freshDays;
     }
+
     public Ingested ingest(EventInput input) {
         if (input == null || input.eventType() == null || input.occurredAt() == null
                 || !identifier(sourceId, 128) || !identifier(input.externalEventId(), 255)
@@ -156,6 +166,53 @@ public class DeliveryEvidenceService {
                     occurred == null ? "No delivery event observed; suppression remains active." : LIMITATION);
         }, key).stream().findFirst().orElseGet(Snapshot::none);
     }
+
+    public UUID suppress(String email, String reasonCode) {
+        String key = emailKey(email);
+        validReason(reasonCode);
+        return Objects.requireNonNull(transactions.execute(tx -> {
+            lockIdentity(key);
+            UUID id = UUID.randomUUID();
+            jdbc.update("INSERT INTO delivery_suppression (id, email_key, reason, manual_reason) VALUES (?, ?, 'MANUAL', ?)",
+                    id, key, reasonCode);
+            return id;
+        }));
+    }
+
+    public void lift(UUID suppressionId, String reasonCode) {
+        validReason(reasonCode);
+        if (suppressionId == null) throw new InvalidInput();
+        String key = suppressionKey(suppressionId);
+        Objects.requireNonNull(transactions.execute(tx -> {
+            lockIdentity(key);
+            if (jdbc.update("""
+                    UPDATE delivery_suppression
+                    SET lifted_at = clock_timestamp(), lifting_reason = ?
+                    WHERE id = ? AND lifted_at IS NULL
+                    """, reasonCode, suppressionId) != 1) throw new Conflict();
+            return true;
+        }));
+    }
+    public List<Suppression> suppressions(UUID after, int limit) {
+        if (limit < 1 || limit > 100) throw new InvalidInput();
+        return jdbc.query("""
+                SELECT s.id, s.email_key, s.reason, s.effective_at, s.expires_at,
+                       s.lifted_at, s.lifting_reason, s.source_event_id,
+                       (s.lifted_at IS NULL AND s.effective_at <= clock_timestamp()
+                        AND (s.expires_at IS NULL OR s.expires_at > clock_timestamp())) AS active
+                FROM delivery_suppression s WHERE (?::uuid IS NULL OR s.id > ?::uuid)
+                ORDER BY s.id LIMIT ?
+                """, (rs, row) -> new Suppression(rs.getObject("id", UUID.class), rs.getString("email_key"),
+                rs.getString("reason"), time(rs, "effective_at"), time(rs, "expires_at"),
+                rs.getBoolean("active"), time(rs, "lifted_at"), rs.getString("lifting_reason"),
+                rs.getObject("source_event_id", UUID.class)), after, after, limit);
+    }
+
+    private String suppressionKey(UUID id) {
+        return jdbc.query("SELECT email_key FROM delivery_suppression WHERE id = ?",
+                (rs, row) -> rs.getString(1), id).stream().findFirst().orElseThrow(NotFound::new);
+    }
+
     private void lockIdentity(String key) {
         jdbc.update("INSERT INTO delivery_identity (email_key) VALUES (?) ON CONFLICT DO NOTHING", key);
         jdbc.query("SELECT email_key FROM delivery_identity WHERE email_key = ? FOR UPDATE",
@@ -184,6 +241,11 @@ public class DeliveryEvidenceService {
         }
         return true;
     }
+
+    private static void validReason(String reason) {
+        if (reason == null || !REASON.matcher(reason).matches()) throw new InvalidInput();
+    }
+
     private static boolean identifier(String id, int max) {
         return id != null && id.length() <= max && IDENTIFIER.matcher(id).matches();
     }
@@ -203,6 +265,7 @@ public class DeliveryEvidenceService {
         return type == EventType.COMPLAINT || type == EventType.UNSUBSCRIBED
                 || "RECIPIENT_HARD_BOUNCE".equals(interpretation);
     }
+
     private static Instant time(ResultSet rs, String column) throws SQLException {
         Timestamp value = rs.getTimestamp(column);
         return value == null ? null : value.toInstant();
