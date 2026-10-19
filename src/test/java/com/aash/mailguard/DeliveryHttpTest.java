@@ -229,6 +229,19 @@ class DeliveryHttpTest {
         fixedError(send("DELETE", "/api/suppressions/" + id,
                 "{\"reasonCode\":\"ADMIN_RELEASE\"}", KEY), 409);
     }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void sensitiveInputNeverAppearsInErrorsOrApplicationLogs(CapturedOutput logs) throws Exception {
+        String email = "secret-" + UUID.randomUUID() + "@fixture.test";
+        String externalId = "private-" + UUID.randomUUID();
+        ingest(email, "HARD_BOUNCE", externalId, "5.1.1");
+        fixedError(send("POST", "/api/delivery-events", event(email, "SOFT_BOUNCE", externalId, "4.2.1"), KEY), 409);
+        fixedError(send("POST", "/api/delivery-evidence/lookup", "{\"email\":\"" + email + "\",\"secret\":1}", KEY), 400);
+        assertFalse(logs.toString().contains(email));
+        assertFalse(logs.toString().contains(externalId));
+    }
+
     private UUID ingest(String email, String type, String externalId, String code) throws Exception {
         HttpResponse<String> response = send("POST", "/api/delivery-events", event(email, type, externalId, code), KEY);
         assertEquals(201, response.statusCode());
