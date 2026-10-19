@@ -81,9 +81,9 @@ class PostgresPersistenceTest {
 
     @Test
     void freshFlywaySchemaValidatesAndRepeatedMigrationsPreserveRows() {
-        assertEquals("4", flyway.info().current().getVersion().getVersion());
-        assertEquals(4, jdbc.queryForObject(
-                "SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2', '3', '4') AND success", Integer.class));
+        assertEquals("5", flyway.info().current().getVersion().getVersion());
+        assertEquals(5, jdbc.queryForObject(
+                "SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2', '3', '4', '5') AND success", Integer.class));
         assertEquals("timestamp with time zone", jdbc.queryForObject(
                 "SELECT data_type FROM information_schema.columns WHERE table_name = 'email_validation_history' "
                         + "AND column_name = 'created_at'", String.class));
@@ -103,7 +103,7 @@ class PostgresPersistenceTest {
         }
     }
     @Test
-    void populatedV1UpgradesThroughV4WithoutChangingHistoryOrRepeatingMigrations() {
+    void populatedV1UpgradesThroughV5WithoutChangingHistoryOrRepeatingMigrations() {
         String schema = "phase8_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.execute("CREATE SCHEMA " + schema);
         Flyway v1 = Flyway.configure()
@@ -118,8 +118,8 @@ class PostgresPersistenceTest {
         Flyway upgraded = Flyway.configure()
                 .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
                 .schemas(schema).createSchemas(false).load();
-        assertEquals(3, upgraded.migrate().migrationsExecuted);
-        assertEquals("4", upgraded.info().current().getVersion().getVersion());
+        assertEquals(4, upgraded.migrate().migrationsExecuted);
+        assertEquals("5", upgraded.info().current().getVersion().getVersion());
         assertEquals(0, upgraded.migrate().migrationsExecuted);
         assertEquals(tableOid, jdbc.queryForObject("SELECT oid FROM pg_class WHERE oid = ?::regclass",
                 Long.class, schema + ".email_validation_history"));
@@ -133,7 +133,7 @@ class PostgresPersistenceTest {
 
 
     @Test
-    void populatedV2JobsAndLinkedHistorySurviveV4Upgrade() {
+    void populatedV2JobsAndLinkedHistorySurviveV5Upgrade() {
         String schema = "phase8_jobs_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.execute("CREATE SCHEMA " + schema);
         try {
@@ -148,11 +148,11 @@ class PostgresPersistenceTest {
             Long history = jdbc.queryForObject("INSERT INTO " + schema
                     + ".email_validation_history (job_id, email) VALUES (?, ?) RETURNING id",
                     Long.class, job, "preserved@fixture.test");
-            Flyway v4 = Flyway.configure()
+            Flyway v5 = Flyway.configure()
                     .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
                     .schemas(schema).createSchemas(false).load();
-            assertEquals(2, v4.migrate().migrationsExecuted);
-            assertEquals(0, v4.migrate().migrationsExecuted);
+            assertEquals(3, v5.migrate().migrationsExecuted);
+            assertEquals(0, v5.migrate().migrationsExecuted);
             assertEquals("PENDING", jdbc.queryForObject(
                     "SELECT state FROM " + schema + ".verification_job WHERE id = ?", String.class, job));
             assertEquals(job, jdbc.queryForObject(
@@ -182,10 +182,10 @@ class PostgresPersistenceTest {
             jdbc.update("INSERT INTO " + schema + ".import_row(import_id, ordinal, row_state, reason) "
                     + "VALUES (?, 3, 'REJECTED', 'EMPTY_EMAIL')", id);
 
-            Flyway v4 = Flyway.configure()
+            Flyway v5 = Flyway.configure()
                     .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
                     .schemas(schema).createSchemas(false).load();
-            assertEquals(1, v4.migrate().migrationsExecuted);
+            assertEquals(2, v5.migrate().migrationsExecuted);
             assertEquals(List.of(3L, 1L, 1L, 1L, 0L), jdbc.queryForObject(
                     "SELECT input_rows, accepted_rows, duplicate_rows, rejected_rows, pending_rows "
                             + "FROM " + schema + ".import_batch WHERE id = ?",
@@ -405,8 +405,8 @@ class PostgresPersistenceTest {
         assertEquals(List.of(firstId, secondId), originalRows.stream().map(row -> row.get("id")).toList());
         assertEquals(firstTimestamp, originalRows.get(0).get("created_at"));
         assertEquals(secondTimestamp, originalRows.get(1).get("created_at"));
-        assertEquals(4, originalMigrations.size());
-        assertEquals(List.of("1", "2", "3", "4"), originalMigrations.stream().map(row -> row.get("version")).toList());
+        assertEquals(5, originalMigrations.size());
+        assertEquals(List.of("1", "2", "3", "4", "5"), originalMigrations.stream().map(row -> row.get("version")).toList());
         assertTrue(originalMigrations.stream().allMatch(row -> row.get("checksum") != null));
         assertTrue(originalMigrations.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))));
         assertEquals(true, originalSequence.get("is_called"));
@@ -439,7 +439,7 @@ class PostgresPersistenceTest {
                             "--spring.jpa.hibernate.ddl-auto=validate")) {
                 JdbcTemplate restoredJdbc = restored.getBean(JdbcTemplate.class);
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
-                assertEquals(4, restoredJdbc.queryForObject(
+                assertEquals(5, restoredJdbc.queryForObject(
                         "SELECT count(*) FROM flyway_schema_history", Integer.class));
                 assertEquals(originalRows, restoredJdbc.queryForList(rowsSql));
                 assertEquals(originalSequence, restoredJdbc.queryForMap(
@@ -462,7 +462,7 @@ class PostgresPersistenceTest {
                 assertTrue(restoredRepository.existsById(firstId));
                 assertTrue(restoredRepository.existsById(secondId));
                 assertEquals(3, restoredRepository.count());
-                assertEquals("4", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
+                assertEquals("5", restored.getBean(Flyway.class).info().current().getVersion().getVersion());
                 assertEquals(originalMigrations, restoredJdbc.queryForList(migrationsSql));
             }
         } finally {
