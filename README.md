@@ -18,6 +18,7 @@ This repository preserves the history and attribution of [the original MailGuard
 - ✔ Swagger/OpenAPI documentation
 - ✔ PostgreSQL validation history with versioned Flyway schema
 - ✔ PostgreSQL-backed single-address jobs with a separately runnable, bounded worker
+- ✔ Authorized historical delivery events, audit-preserving suppressions, and optional validation evidence (Phase 9)
 - ✔ Maven project
 
 ## 📦 Installation
@@ -56,7 +57,7 @@ docker compose exec -T postgres psql -U $env:DB_USERNAME -d mailguard -c 'SELECT
 Stop the application with Ctrl+C, then run `docker compose stop` from a shell with the same Compose credentials. The named PostgreSQL volume and history survive restarts; do **not** run `docker compose down -v` against data you intend to keep. `DB_PORT` changes the localhost host port (default `5432`); update `DB_URL` to match. `DB_NAME` changes the initial database name (default `mailguard`). Compose is for local development, not production credential storage. On other shells, set equivalent environment variables before running the same commands.
 
 ## 🚀 Quick Start
-Start the Spring Boot application only after PostgreSQL is healthy. Flyway creates V1 and V2 on an empty database; on a compatible V1 installation, V2 adds jobs without replacing existing history. An existing nonempty database without Flyway history is refused; Hibernate will not repair or drop tables. Production pool defaults: five maximum and one minimum idle connection; adjust `DB_POOL_MAX_SIZE`, `DB_POOL_MIN_IDLE`, `DB_POOL_CONNECTION_TIMEOUT_MS`, `DB_POOL_IDLE_TIMEOUT_MS` and `DB_POOL_MAX_LIFETIME_MS` only after measuring workload.
+Start Spring Boot only after PostgreSQL is healthy. Flyway applies V1–V5 on an empty database; a compatible existing V1–V4 database upgrades forward without rewriting previous migrations or deleting rows. An untracked populated database is refused. Hibernate validates instead of repairing schema. The pool defaults to five connections and one minimum idle; change `DB_POOL_MAX_SIZE`, `DB_POOL_MIN_IDLE`, `DB_POOL_CONNECTION_TIMEOUT_MS`, `DB_POOL_IDLE_TIMEOUT_MS` and `DB_POOL_MAX_LIFETIME_MS` only after measuring workload.
 
 Once the application starts successfully, open your browser:
 
@@ -70,11 +71,11 @@ You can now test all available email validation APIs directly from Swagger UI.
 
 Flyway V1 initializes a **new empty PostgreSQL 17 database**; Hibernate validates the schema rather than updating it. The owner reports that the previous MySQL database has two irrelevant records and explicitly does not want them imported. The old MySQL database is **not required** for the new installation. Do not delete its database, containers or volumes as part of this cutover.
 
-Start with a separate empty PostgreSQL database and the `DB_URL`, `DB_USERNAME` and `DB_PASSWORD` environment variables above. On first startup, verify successful Flyway V1 and V2 entries, the history table and `verification_job`. A compatible V1 database upgrades to V2 while retaining its history rows. Subsequent startups must reuse that schema and preserve its rows. No MySQL reader, import, dual-write or cross-engine migration is part of this installation.
+On first startup, check Flyway V1–V5, `email_validation_history`, `verification_job`, `import_batch`, `delivery_event`, and `delivery_suppression`. A compatible V4 installation receives V5's additive delivery tables and nullable completed-job evidence JSONB; existing history, jobs, imports, and terminal snapshots stay intact. Reuse the same database on subsequent starts. No old MySQL records are imported.
 
-**Never reset an existing populated PostgreSQL database automatically.** Flyway baseline and clean are disabled; Hibernate uses `ddl-auto=validate`. If V1 is already recorded and the schema matches, V2 adds the job table and history reference without rewriting V1. If a populated database lacks Flyway history or its checksum/schema is incompatible, startup must fail: investigate and back up the database rather than dropping tables, baselining, repairing or rerunning V1. PostgreSQL backup and restore, not the unused MySQL database, are the recovery path for new writes.
+**Never reset a populated PostgreSQL database automatically.** Flyway baseline and clean are disabled; Hibernate uses `ddl-auto=validate`. V1–V4 are immutable. A missing Flyway history entry, incompatible checksum, or incompatible schema must stop startup; investigate and back up instead of dropping tables, baselining, repairing, or replaying applied migrations. PostgreSQL backup and restore, not the unused MySQL database, protect new writes.
 
-The existing table retains full addresses without an approved retention/access policy; no public history-read endpoint is provided. Recent-history repository reads accept pagination and order by timestamp then id; an authorized caller must impose a page-size limit before exposing them. The classifier's typed DNS/SMTP observations are **not** persisted: it is not used by the live API, and authorization, retention, provenance and TTL are unresolved. D-025 documents an additive, privacy-preserving future schema. Phase 6 does not add jobs, CSV, Valkey, SMTP activation, a worker or a UI.
+History retains full addresses without approved retention or access policy; there is no public history-read endpoint. The in-memory `EvidenceClassifier` still does not persist its DNS/SMTP observations. Phase 9 persists separate, authorized delivery events and suppression audit rows under V5; it does not enable SMTP, Valkey, or the UI. See D-032 through D-034.
 
 ## 📖 Usage
 MailGuard checks local email format, then observes DNS routing for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
@@ -94,7 +95,7 @@ $env:JOBS_WORKER_ENABLED = 'true'
 java -jar target/mailguard-0.0.1-SNAPSHOT.jar --spring.main.web-application-type=none
 ```
 
-The API defaults to `JOBS_WORKER_ENABLED=false`; the headless process serves no HTTP. `mvn -B package` builds the jar. `POST /api/jobs` accepts `{"email":"bad-address"}` with `X-Job-API-Key` and an optional printable ASCII `Idempotency-Key` (1–128 characters). It returns HTTP 202 with `{ "id": "<uuid>", "reused": false }` and `Location: /api/jobs/<uuid>`. `GET /api/jobs/<uuid>` returns `state`, `attempts`, `maxAttempts`, due/creation/completion times, a safe failure code if applicable, and the existing seven-field `result` **only** when completed. Invalid email syntax is a completed `INVALID` result, not a failed job. Existing `/api/email/validate` and `/api/email/test` stay synchronous and unchanged.
+The API defaults to `JOBS_WORKER_ENABLED=false`; the headless process serves no HTTP. `mvn -B package` builds the jar. `POST /api/jobs` accepts `{"email":"bad-address"}` with `X-Job-API-Key` and an optional printable ASCII `Idempotency-Key` (1–128 characters). It returns HTTP 202 with `{ "id": "<uuid>", "reused": false }` and `Location: /api/jobs/<uuid>`. `GET /api/jobs/<uuid>` returns state, attempts, times, a safe failure code, and a completed `result` with the seven established validation fields. Phase 9 can add `historicalEvidence` only when a valid address has an observation or the evidence store is unavailable. Invalid syntax completes with `INVALID`, not a failed job. The synchronous validation route remains synchronous.
 
 `DELETE /api/jobs/<uuid>` is **cancellation, not data erasure**. PENDING, RUNNING and RETRY become CANCELLED with HTTP 200 and a job-status body; repeating DELETE on CANCELLED returns the same terminal status with HTTP 200. A COMPLETED or FAILED job stays unchanged and returns HTTP 409 with a sanitized `Conflict` error; an unknown ID returns HTTP 404. Cancellation and completion compete under PostgreSQL's row lock: only one terminal outcome wins. The states are `PENDING`, `RUNNING`, `RETRY`, `COMPLETED`, `FAILED` and `CANCELLED`.
 
@@ -114,7 +115,7 @@ Idempotency uses **byte-exact identity of the decoded email string encoded as UT
 
 ## Streaming CSV imports (Phase 8)
 
-Run the same API and headless worker as above, backed by the same PostgreSQL database. Every import route requires the nonempty `X-Job-API-Key`; this is one trusted principal, **not** tenant isolation. Use TLS and private network access. The existing synchronous routes and single-address job API are unchanged.
+Run the same API and headless worker against the same PostgreSQL database. Every import route requires a nonempty `X-Job-API-Key`; this is one trusted principal, **not** tenant isolation. Use TLS and private network access. Phase 9 does not change CSV upload, progress, paging, cancellation, or export columns; a completed unique job may carry optional historical evidence through authenticated `GET /api/jobs/{id}`.
 
 ```powershell
 $headers = @{ 'X-Job-API-Key' = $env:JOBS_API_KEY }
@@ -133,6 +134,29 @@ curl.exe -sS -H "X-Job-API-Key: $env:JOBS_API_KEY" "http://127.0.0.1:8080/api/im
 Defaults: CSV file at most 16 MiB (`IMPORTS_MAX_UPLOAD_BYTES`), multipart request at most 17 MiB, 50,000 rows (`IMPORTS_MAX_ROWS`), 2,048 decoded characters per record (`IMPORTS_MAX_RECORD_CHARS`), 255 characters per stored email (`IMPORTS_MAX_EMAIL_CHARS`), 250 staged/promoted rows per batch (`IMPORTS_BATCH_SIZE`), two simultaneous multipart parses per API instance (`IMPORTS_MAX_CONCURRENT_UPLOADS`), results/export fetch page 500 (`IMPORTS_RESULTS_PAGE_SIZE`), 60-minute stale-ingest timeout (`IMPORTS_STALE_MINUTES`), and promoter poll interval 500 ms (`IMPORTS_WORKER_POLL_MILLIS`). Spring servlet multipart caps remain fixed at 16/17 MiB; raising application byte caps alone does not raise servlet limits. Rejected uploads return a sanitized error; a server-side permit returns 429 when busy. Temp multipart files follow servlet cleanup; upload permits are local to each API process. CSV addresses, job results and linked history persist indefinitely until an approved retention and deletion policy exists; do not upload personal lists to a public deployment.
 
 Run the opt-in disposable PostgreSQL 17 workloads with `mvn -B "-Dimports.benchmark=true" "-Dtest=BulkBenchmarkTest" test`. They ingest 15,000 and 40,000 distinct synthetic invalid-syntax rows over loopback HTTP, complete them through the headless worker, and stream ordered CSV exports. Reported promotion time includes ingestion; database growth is measured against each run's starting size. These runs do not establish external DNS capacity or production throughput.
+
+## Historical delivery evidence and suppression (Phase 9)
+
+Set `JOBS_API_KEY` and `DELIVERY_SOURCE_ID` in the API environment. `DELIVERY_SOURCE_ID` identifies the trusted administrative JSON feed (1–128 ASCII letters, digits, `.`, `_`, `:`, or `-`; starts with a letter/digit). The API never receives a source identifier from an event body. This is an authenticated operator feed, **not** an unauthenticated provider webhook or an SMTP probe. Only ingest events from a source you control and can audit. All delivery routes require the nonempty `X-Job-API-Key` before reading the body. Keep the key private and the API behind TLS and private network access.
+
+```powershell
+$headers = @{ 'X-Job-API-Key' = $env:JOBS_API_KEY }
+$event = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/delivery-events -Headers $headers -ContentType 'application/json' -Body '{"email":"sample@fixture.test","eventType":"HARD_BOUNCE","externalEventId":"local-001","occurredAt":"2026-10-18T12:00:00Z","enhancedStatusCode":"5.1.1"}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/delivery-evidence/lookup -Headers $headers -ContentType 'application/json' -Body '{"email":"sample@fixture.test"}'
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8080/api/delivery-events/$($event.id)/revoke" -Headers $headers -ContentType 'application/json' -Body '{"reasonCode":"SOURCE_CORRECTION"}'
+```
+
+Use an `occurredAt` in UTC from 2000 onward, no more than five minutes in the future, and at most six fractional-second digits. Feed `externalEventId` is unique per configured source (1–255 safe ASCII identifier characters). One event per JSON request: `HARD_BOUNCE`, `SOFT_BOUNCE`, `DELIVERED`, `COMPLAINT`, or `UNSUBSCRIBED`. An identical external ID and exact original payload replays with HTTP 200 and `reused=true`; a changed payload returns 409. A new event returns 201 with an ID. Event source, address, time, sanitized code, interpretation, and observation time are persisted. Correction uses `POST /api/delivery-events/{id}/revoke` with `{"reasonCode":"SOURCE_CORRECTION"}`; it records revocation and lifts only the linked suppression. Neither deletion nor silent replacement of audit history is supported.
+
+Only a `HARD_BOUNCE` with exact enhanced code `5.1.1` is recipient-specific negative evidence and starts a suppression. Other hard bounces are `UNCERTAIN_BOUNCE`; a soft bounce with `4.x.x` is transient, and other soft codes remain uncertain. `COMPLAINT` and `UNSUBSCRIBED` start independent suppressions. `DELIVERED` is historical delivery evidence only: it never proves current mailbox validity or automatically lifts a bounce, complaint, unsubscribe, or manual suppression. The HTTP feed accepts at most 32 visible ASCII status characters other than `@`; malformed codes in that range retain only a SHA-256 fingerprint for exact replay and never suppress. Reject raw server replies, transcripts, and addresses in status fields.
+
+`POST /api/suppressions` accepts `{"email":"sample@fixture.test","reasonCode":"OPERATOR_BLOCK"}` and creates a `MANUAL` suppression with the supplied reason in its audit column. `GET /api/suppressions?limit=50&after=<uuid>` lists historical entries in UUID order, including lifted rows; `limit` is 1–100. `DELETE /api/suppressions/{id}` takes `{"reasonCode":"OPERATOR_RELEASE"}` and audits a lift, not an erasure. Active manual and event suppressions have no automatic expiry. Only an explicit lift or audited event revocation changes them; multiple simultaneous reasons require lifting each relevant record. Missing/wrong/empty configured keys return 401; invalid JSON/IDs/fields return 400, bodies over 8 KiB return 413, unknown IDs 404, and conflicting replays/lifts 409. Error bodies are fixed and contain no supplied email, source ID, or event ID.
+
+The address key preserves the exact local part (including quoted characters and case) and converts only the domain to canonical lowercase ASCII IDN. Thus `User@BÜCHER.example` matches `User@xn--bcher-kva.example`, while `user@...` is a different identity. The external-event replay comparison additionally requires the original email string exactly; normalization never silently changes source payload identity. The lookup has one indexed PostgreSQL snapshot: the latest unrevoked event by occurrence/observation time, plus an independently active suppression. `DELIVERY_FRESH_DAYS` defaults to 30 (allowed 1–3650); `freshness` is `FRESH`, `STALE`, or `NONE`. A stale event remains historical, and an existing suppression remains active. Empty lookup returns `available=false`, `freshness=NONE`, `suppressed=false`; evidence-store failure is `UNAVAILABLE` with unknown suppression, never a fabricated negative result.
+
+Without a key, `POST /api/email/validate` still returns exactly seven legacy fields. With a valid key, a format-valid request can include `historicalEvidence` alongside the unchanged `UNVERIFIED` category; malformed syntax skips DNS and historical lookup. If only historical lookup fails while the normal history database remains writable, the authorized response reports `UNAVAILABLE` and `suppressed=null`. Completed Phase 7 jobs and Phase 8-promoted jobs persist an optional snapshot in V5's nullable JSONB column under the existing lease fence. Those completed snapshots are not retroactively edited by a later correction. Bulk CSV progress, result rows, and export columns remain unchanged; inspect each unique job through authenticated `GET /api/jobs/{id}` when historical detail is needed. This does not merge the separate internal `EvidenceClassifier` into the public category.
+
+V5 is additive to applied V1–V4, with immutable event/suppression rows except audited first corrections/lifts and indexes on recent evidence and active suppressions. The configured five-connection pool bounds database work; no Valkey cache is involved. Delivery tables, addresses, job snapshots, IDs, and backups have **no approved retention or legal-hold policy**; database owners can bypass row-level audit triggers with `TRUNCATE`. The shared key grants every holder all event and suppression access, not tenant isolation. Set owner-scoped access, retention/deletion and backup-expiry rules, rate limits, audit privileges, and TLS/egress policy before public deployment. No bulk performance benchmark or production DNS capacity claim follows from Phase 9.
 
 ## 📧 Email Validation
 ### Validate an Email Address
@@ -200,7 +224,7 @@ Engine 3 is present in `origin/main` after PR #4. The API remains passive; activ
 
 `EvidenceClassifier` combines a local syntax result, optional `DnsObservation`, and optional SMTP evidence into an immutable `ClassificationResult`. Categories are `INVALID_SYNTAX`, `DOMAIN_NOT_FOUND` (DNS NXDOMAIN), `MAIL_NOT_ACCEPTED` (sole Null MX), `ROUTE_AVAILABLE` (usable DNS route), `ROUTE_UNCERTAIN` (absent, unusable, conflicting, or unknown route evidence), `RECIPIENT_ACCEPTED_UNCONFIRMED` (RCPT 250/251), and `RECIPIENT_REJECTED` (RCPT 550 with enhanced 5.1.1 and matching reason). Neither an MX route nor SMTP acceptance proves mailbox existence or delivery. A missing DNS route is not the same as NXDOMAIN; ambiguous or temporary SMTP refusals never become recipient rejection.
 
-Evidence retains syntax and DNS reason codes, canonical DNS domain and MX hosts, source and observation times. The optional SMTP snapshot retains typed outcome/reason, reply and sanitized enhanced code, but not host, address, reply text, or transcript. Results include a safe diagnostic, reason code, computation time, and retryability. No TTL or expiry policy exists, so evidence freshness is unknown. This is an internal, in-memory milestone (D-024), not the Phase 5 local product in [PLAN.md](PLAN.md). The public API and PostgreSQL history still return `INVALID` only for invalid syntax and `UNVERIFIED` for every format-valid input, without new fields or SMTP calls.
+Classifier evidence retains syntax and DNS reason codes, canonical DNS domain and MX hosts, source and observation times. Optional SMTP snapshots retain typed outcome/reason and sanitized enhanced code, not transcripts. The classifier remains internal and in memory (D-024); it has no TTL or expiry policy. Phase 9 adds a separate delivery-history snapshot with freshness, not persisted classifier/DNS/SMTP observations. Existing public validation categories remain `INVALID` for bad syntax and `UNVERIFIED` for every format-valid address. No SMTP call or mailbox-success claim is added.
 
 ## Supported Email Syntax
 MailGuard accepts ASCII dot-atoms (including `+` tags) and whole quoted ASCII local parts with printable escaped characters and quoted spaces. It rejects comments, folding whitespace, domain literals, SMTPUTF8 local parts, empty components, and unquoted spaces. This is a supported subset of RFC 5321/5322, not a full RFC parser.
@@ -218,8 +242,8 @@ http://localhost:8080
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/email/validate` | Validate an email address |
-| POST | `/api/email/test` | Same synchronous validation contract |
+| POST | `/api/email/validate` | Legacy seven-field validation without a key; a valid shared key permits an optional historical evidence field |
+| POST | `/api/email/test` | Return the existing API diagnostic string |
 | POST | `/api/jobs` | Submit a durable job (shared API key required) |
 | GET | `/api/jobs/{id}` | Read a job and completed result (shared API key required) |
 | DELETE | `/api/jobs/{id}` | Cancel outstanding work (shared API key required) |
@@ -228,6 +252,12 @@ http://localhost:8080
 | GET | `/api/imports/{id}/results` | Read ordered paged rows (shared API key required) |
 | GET | `/api/imports/{id}/export` | Stream ordered CSV results (shared API key required) |
 | DELETE | `/api/imports/{id}` | Cancel unprocessed rows and linked jobs (shared API key required) |
+| POST | `/api/delivery-events` | Ingest one authorized delivery event (shared key required) |
+| POST | `/api/delivery-events/{id}/revoke` | Audit a correction and lift its linked suppression |
+| POST | `/api/delivery-evidence/lookup` | Read one historical snapshot by address |
+| GET | `/api/suppressions` | List suppression history, UUID keyset pagination |
+| POST | `/api/suppressions` | Create a manual suppression |
+| DELETE | `/api/suppressions/{id}` | Audit an explicit suppression lift |
 
 ## 📂 Project Structure
 The root Maven project contains the Spring Boot API in `src/main/java/com/aash/mailguard` and offline tests in `src/test/java`.
