@@ -1,5 +1,8 @@
 package com.aash.mailguard.dto;
 
+import com.aash.mailguard.delivery.DeliveryEvidenceService.Snapshot;
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 public class EmailValidationResponse {
     private String email;
     private String domain;
@@ -8,6 +11,7 @@ public class EmailValidationResponse {
     private Boolean smtpVerified;
     private String status;
     private String message;
+    private Snapshot historicalEvidence;
 
     public EmailValidationResponse() {
     }
@@ -66,5 +70,14 @@ public class EmailValidationResponse {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Snapshot getHistoricalEvidence() {
+        return historicalEvidence;
+    }
+
+    public void setHistoricalEvidence(Snapshot historicalEvidence) {
+        this.historicalEvidence = historicalEvidence;
     }
 }

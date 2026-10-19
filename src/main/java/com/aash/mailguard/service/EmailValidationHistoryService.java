@@ -1,5 +1,7 @@
 package com.aash.mailguard.service;
 
+import com.aash.mailguard.delivery.DeliveryEvidenceService;
+import com.aash.mailguard.delivery.DeliveryEvidenceService.Snapshot;
 import com.aash.mailguard.dns.DnsLookupService;
 import com.aash.mailguard.dns.DnsObservation;
 import com.aash.mailguard.dto.EmailValidationRequest;
@@ -7,6 +9,7 @@ import com.aash.mailguard.dto.EmailValidationResponse;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
 import com.aash.mailguard.validator.EmailFormatValidator;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
 
@@ -16,18 +19,22 @@ public class EmailValidationHistoryService {
     private final EmailValidationHistoryRepository repository;
     private final EmailFormatValidator validator;
     private final DnsLookupService dnsLookup;
+    private final DeliveryEvidenceService historical;
 
     public EmailValidationHistoryService(
             EmailValidationHistoryRepository repository,
             EmailFormatValidator validator,
-            DnsLookupService dnsLookup) {
+            DnsLookupService dnsLookup,
+            DeliveryEvidenceService historical) {
 
         this.repository = repository;
-        this.validator=validator;
-        this.dnsLookup=dnsLookup;
+        this.validator = validator;
+        this.dnsLookup = dnsLookup;
+        this.historical = historical;
     }
-    public EmailValidationResponse validate(EmailValidationRequest request) {
-        EmailValidationResponse response = compute(request).response();
+
+    public EmailValidationResponse validate(EmailValidationRequest request, boolean includeEvidence) {
+        EmailValidationResponse response = compute(request, includeEvidence).response();
         saveHistory(response);
         return response;
     }
@@ -36,6 +43,10 @@ public class EmailValidationHistoryService {
     }
 
     public Computation compute(EmailValidationRequest request) {
+        return compute(request, true);
+    }
+
+    private Computation compute(EmailValidationRequest request, boolean includeEvidence) {
         String email = request.getEmail();
 
         EmailValidationResponse response = new EmailValidationResponse();
@@ -72,6 +83,16 @@ public class EmailValidationHistoryService {
             case NO_MAIL_ROUTE, DOMAIN_NOT_FOUND -> "No MX record observed; mailbox not verified.";
             default -> "DNS lookup unavailable; mailbox not verified.";
         });
+        if (includeEvidence) {
+            try {
+                Snapshot snapshot = historical.lookup(email);
+                if (snapshot.available()) {
+                    response.setHistoricalEvidence(snapshot);
+                }
+            } catch (DataAccessException unavailable) {
+                response.setHistoricalEvidence(Snapshot.unavailable());
+            }
+        }
         return new Computation(response, observation.retryable());
     }
 

@@ -29,6 +29,7 @@ public class GlobalExceptionHandler {
         boolean evidenceRoute = path.equals("/api/delivery-evidence/lookup");
         boolean suppressionRoute = path.equals("/api/suppressions") || path.startsWith("/api/suppressions/");
         boolean deliveryRoute = eventRoute || evidenceRoute || suppressionRoute;
+        boolean validationRoute = path.equals("/api/email/validate");
         boolean protectedRoute = jobRoute || importRoute || deliveryRoute;
         HttpStatus status;
         if (jobRoute && ex instanceof JobStore.QueueFull) {
@@ -41,6 +42,9 @@ public class GlobalExceptionHandler {
             status = HttpStatus.CONFLICT;
         } else if (deliveryRoute && ex instanceof DeliveryEvidenceService.NotFound) {
             status = HttpStatus.NOT_FOUND;
+        } else if (validationRoute && ex instanceof ResponseStatusException responseStatus
+                && responseStatus.getStatusCode().value() == 401) {
+            status = HttpStatus.UNAUTHORIZED;
         } else if (deliveryRoute && (ex instanceof IOException
                 || ex instanceof org.apache.tomcat.util.http.InvalidParameterException)) {
             status = HttpStatus.BAD_REQUEST;
