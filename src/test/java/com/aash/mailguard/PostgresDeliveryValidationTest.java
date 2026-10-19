@@ -121,6 +121,44 @@ class PostgresDeliveryValidationTest {
         JsonNode restored = JSON.readTree(send("GET", "/api/jobs/" + job, null, KEY).body());
         assertEquals(event.toString(), restored.get("result").get("historicalEvidence").get("eventId").asText());
     }
+
+    @Test
+    void bulkWorkerRetainsProgressAndCsvContractWhileJobsCarryEvidence() throws Exception {
+        UUID complaint = ingest("bulk@fixture.test", EventType.COMPLAINT, "bulk-complaint");
+        String csv = "email\nbulk@fixture.test\ninvalid-syntax\n";
+        String boundary = "mailguard-phase9-fixture";
+        String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"list.csv\"\r\n"
+                + "Content-Type: text/csv\r\n\r\n" + csv + "\r\n--" + boundary + "--\r\n";
+        worker = start(true);
+        when(worker.getBean(DnsLookupService.class).lookup("fixture.test")).thenReturn(route());
+        HttpResponse<String> staged = http.send(HttpRequest.newBuilder(uri("/api/imports"))
+                .header("X-Job-API-Key", KEY)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.getBytes(StandardCharsets.UTF_8)))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(202, staged.statusCode(), staged.body());
+        UUID batch = UUID.fromString(JSON.readTree(staged.body()).get("id").asText());
+        JsonNode done = await("/api/imports/" + batch, "state", "COMPLETED", 20);
+        assertEquals(2, done.get("inputRows").asInt());
+        assertEquals(2, done.get("completedRows").asInt());
+        JsonNode rows = JSON.readTree(send("GET", "/api/imports/" + batch + "/results?after=0&limit=10", null, KEY).body());
+        assertEquals(2, rows.size());
+        assertEquals(1, rows.get(0).get("ordinal").asInt());
+        assertEquals("UNVERIFIED", rows.get(0).get("resultStatus").asText());
+        assertEquals("INVALID", rows.get(1).get("resultStatus").asText());
+        UUID job = jdbc.queryForObject("SELECT job_id FROM import_row WHERE import_id = ? AND ordinal = 1",
+                UUID.class, batch);
+        assertNotNull(job);
+        JsonNode jobResult = JSON.readTree(send("GET", "/api/jobs/" + job, null, KEY).body()).get("result");
+        assertEquals(complaint.toString(), jobResult.get("historicalEvidence").get("eventId").asText());
+        assertTrue(jobResult.get("historicalEvidence").get("suppressed").asBoolean());
+        HttpResponse<String> exported = send("GET", "/api/imports/" + batch + "/export", null, KEY);
+        assertEquals(200, exported.statusCode());
+        assertTrue(exported.body().startsWith("ordinal,email,rowState,duplicateOf,reason,jobState,resultStatus,"));
+        assertTrue(exported.body().indexOf("bulk@fixture.test") < exported.body().indexOf("invalid-syntax"));
+        assertFalse(exported.body().contains("historicalEvidence"));
+    }
+
     private UUID ingest(String email, EventType type, String id) {
         return api.getBean(DeliveryEvidenceService.class).ingest(
                 new EventInput(email, type, id, Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS), null)).id();
