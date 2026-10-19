@@ -180,6 +180,34 @@ class DeliveryEvidenceStoreTest {
     }
 
     @Test
+    void correctionRevokesWithoutErasureAndOnlyLiftsItsOwnSuppression() {
+        Instant at = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID bounce = evidence.ingest(event("correct@example.test", EventType.HARD_BOUNCE, "wrong", at, "5.1.1")).id();
+        UUID manual = evidence.suppress("correct@example.test", "OPERATOR_BLOCK");
+        assertEquals("MANUAL", jdbc.queryForObject(
+                "SELECT reason FROM delivery_suppression WHERE id = ?", String.class, manual));
+        assertEquals("OPERATOR_BLOCK", jdbc.queryForObject(
+                "SELECT manual_reason FROM delivery_suppression WHERE id = ?", String.class, manual));
+        evidence.revoke(bounce, "SOURCE_CORRECTION");
+        assertEquals("SOURCE_CORRECTION", jdbc.queryForObject(
+                "SELECT revocation_reason FROM delivery_event WHERE id = ?", String.class, bounce));
+        assertEquals("SOURCE_CORRECTION", jdbc.queryForObject(
+                "SELECT lifting_reason FROM delivery_suppression WHERE source_event_id = ?", String.class, bounce));
+        assertTrue(evidence.lookup("correct@example.test").suppressed());
+        assertNull(evidence.lookup("correct@example.test").eventId());
+        assertTrue(evidence.ingest(event("correct@example.test", EventType.HARD_BOUNCE, "wrong", at, "5.1.1")).reused());
+        assertThrows(DeliveryEvidenceService.Conflict.class, () -> evidence.revoke(bounce, "AGAIN"));
+        UUID corrected = evidence.ingest(event("correct@example.test", EventType.DELIVERED, "corrected", at.plus(1, ChronoUnit.SECONDS), null)).id();
+        assertEquals(corrected, evidence.lookup("correct@example.test").eventId());
+        evidence.lift(manual, "OPERATOR_RELEASE");
+        assertFalse(evidence.lookup("correct@example.test").suppressed());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM delivery_event", Integer.class));
+        assertThrows(DeliveryEvidenceService.NotFound.class, () -> evidence.revoke(UUID.randomUUID(), "UNKNOWN"));
+        assertThrows(DeliveryEvidenceService.NotFound.class, () -> evidence.lift(UUID.randomUUID(), "UNKNOWN"));
+        assertThrows(DeliveryEvidenceService.Conflict.class, () -> evidence.lift(manual, "AGAIN"));
+    }
+
+    @Test
     void freshnessManualOnlySnapshotAndBoundedKeysetArePersistent() {
         Instant old = Instant.now().minus(40, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
         evidence.ingest(event("older@example.test", EventType.DELIVERED, "old", old, null));
@@ -204,6 +232,30 @@ class DeliveryEvidenceStoreTest {
         assertTrue(ordered.stream().map(DeliveryEvidenceService.Suppression::id).toList().containsAll(Set.of(first, second)));
         assertThrows(DeliveryEvidenceService.InvalidInput.class, () -> evidence.suppressions(null, 101));
         assertThrows(DeliveryEvidenceService.InvalidInput.class, () -> evidence.suppressions(null, 0));
+    }
+
+    @Test
+    void concurrentIngestAndLiftSerializeOnSameAddress() throws Exception {
+        Instant at = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID manual = evidence.suppress("race@example.test", "OPERATOR_BLOCK");
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = pool.submit(() -> { start.await(); return evidence.ingest(event("race@example.test", EventType.COMPLAINT, "race", at, null)); });
+            var second = pool.submit(() -> { start.await(); evidence.lift(manual, "RELEASE"); return true; });
+            start.countDown();
+            var ingested = first.get(10, TimeUnit.SECONDS);
+            assertTrue(second.get(10, TimeUnit.SECONDS));
+            assertTrue(evidence.lookup("race@example.test").suppressed());
+            assertEquals(1, countSuppression(ingested.id()));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM delivery_suppression WHERE id = ? AND lifted_at IS NOT NULL", Integer.class, manual));
+            var same = new CountDownLatch(1);
+            var a = pool.submit(() -> { same.await(); return evidence.ingest(event("parallel@example.test", EventType.COMPLAINT, "repeat", at, null)); });
+            var b = pool.submit(() -> { same.await(); return evidence.ingest(event("parallel@example.test", EventType.COMPLAINT, "repeat", at, null)); });
+            same.countDown();
+            assertEquals(a.get(10, TimeUnit.SECONDS).id(), b.get(10, TimeUnit.SECONDS).id());
+            assertNotEquals(a.get().reused(), b.get().reused());
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM delivery_event WHERE external_event_id = 'repeat'", Integer.class));
+        }
     }
 
     private int countSuppression(UUID eventId) {
