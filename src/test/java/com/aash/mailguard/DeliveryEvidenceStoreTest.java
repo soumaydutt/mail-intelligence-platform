@@ -179,6 +179,33 @@ class DeliveryEvidenceStoreTest {
                 "SELECT email_key FROM delivery_event WHERE id = ?", String.class, id));
     }
 
+    @Test
+    void freshnessManualOnlySnapshotAndBoundedKeysetArePersistent() {
+        Instant old = Instant.now().minus(40, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        evidence.ingest(event("older@example.test", EventType.DELIVERED, "old", old, null));
+        assertEquals("STALE", evidence.lookup("older@example.test").freshness());
+        var extendedFreshness = new DeliveryEvidenceService(jdbc, transactionManager, validator,
+                "fixture-provider", 90);
+        assertEquals("FRESH", extendedFreshness.lookup("older@example.test").freshness());
+        evidence.ingest(event("recent@example.test", EventType.DELIVERED, "recent",
+                Instant.now().minus(2, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS), null));
+        assertEquals("FRESH", evidence.lookup("recent@example.test").freshness());
+        UUID first = evidence.suppress("manual@example.test", "OPERATOR_BLOCK");
+        UUID second = evidence.suppress("manual@example.test", "REVIEW_PENDING");
+        var manual = evidence.lookup("manual@example.test");
+        assertTrue(manual.available());
+        assertNull(manual.eventId());
+        assertTrue(manual.suppressed());
+        assertEquals("NONE", manual.freshness());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM delivery_suppression WHERE email_key = 'manual@example.test'", Integer.class));
+        var ordered = evidence.suppressions(null, 100);
+        assertTrue(ordered.size() >= 2);
+        assertEquals(ordered.get(1).id(), evidence.suppressions(ordered.get(0).id(), 1).getFirst().id());
+        assertTrue(ordered.stream().map(DeliveryEvidenceService.Suppression::id).toList().containsAll(Set.of(first, second)));
+        assertThrows(DeliveryEvidenceService.InvalidInput.class, () -> evidence.suppressions(null, 101));
+        assertThrows(DeliveryEvidenceService.InvalidInput.class, () -> evidence.suppressions(null, 0));
+    }
+
     private int countSuppression(UUID eventId) {
         return jdbc.queryForObject("SELECT count(*) FROM delivery_suppression WHERE source_event_id = ?", Integer.class, eventId);
     }
