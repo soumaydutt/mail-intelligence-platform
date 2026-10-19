@@ -88,6 +88,17 @@ public class DeliveryController {
         return ResponseEntity.status(result.reused() ? HttpStatus.OK : HttpStatus.CREATED)
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").body(result);
     }
+
+    @PostMapping("/delivery-events/{id}/revoke")
+    public ResponseEntity<Void> revoke(@PathVariable String id, HttpServletRequest request,
+            @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) throws IOException {
+        authenticate(suppliedKey);
+        UUID eventId = parseId(id);
+        String reason = reason(body(request, REASON_FIELDS));
+        evidence.revoke(eventId, reason);
+        return noContent();
+    }
+
     @PostMapping("/delivery-evidence/lookup")
     public ResponseEntity<DeliveryEvidenceService.Snapshot> lookup(HttpServletRequest request,
             @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) throws IOException {
@@ -95,6 +106,7 @@ public class DeliveryController {
         return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .body(evidence.lookup(text(body(request, EMAIL_FIELDS), "email", 255)));
     }
+
     @GetMapping("/suppressions")
     public ResponseEntity<List<DeliveryEvidenceService.Suppression>> suppressions(HttpServletRequest request,
             @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) {
