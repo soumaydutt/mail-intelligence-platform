@@ -94,6 +94,33 @@ class PostgresDeliveryValidationTest {
         assertEquals(401, send("POST", "/api/email/validate",
                 "{\"email\":\"" + email + "\"}", "incorrect").statusCode());
     }
+
+    @Test
+    void asyncJobKeepsSevenFieldsAndDurableHistoricalSnapshotAcrossApiRestart() throws Exception {
+        String email = "job@fixture.test";
+        UUID event = ingest(email, EventType.DELIVERED, "job-delivery");
+        worker = start(true);
+        when(worker.getBean(DnsLookupService.class).lookup("fixture.test")).thenReturn(route());
+        JsonNode accepted = JSON.readTree(send("POST", "/api/jobs", "{\"email\":\"" + email + "\"}", KEY).body());
+        UUID job = UUID.fromString(accepted.get("id").asText());
+        JsonNode completed = await("/api/jobs/" + job, "state", "COMPLETED", 15);
+        JsonNode result = completed.get("result");
+        for (String field : LEGACY_FIELDS) assertTrue(result.has(field), field);
+        assertEquals("UNVERIFIED", result.get("status").asText());
+        assertEquals(event.toString(), result.get("historicalEvidence").get("eventId").asText());
+        assertEquals("DELIVERED", jdbc.queryForObject(
+                "SELECT result_historical_evidence ->> 'eventType' FROM verification_job WHERE id = ?",
+                String.class, job));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT count(*) FROM email_validation_history WHERE job_id = ?", Integer.class, job));
+        worker.close();
+        worker = null;
+        api.close();
+        api = start(false);
+        port = api.getEnvironment().getProperty("local.server.port", Integer.class);
+        JsonNode restored = JSON.readTree(send("GET", "/api/jobs/" + job, null, KEY).body());
+        assertEquals(event.toString(), restored.get("result").get("historicalEvidence").get("eventId").asText());
+    }
     private UUID ingest(String email, EventType type, String id) {
         return api.getBean(DeliveryEvidenceService.class).ingest(
                 new EventInput(email, type, id, Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS), null)).id();
