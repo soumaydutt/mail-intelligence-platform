@@ -1,6 +1,7 @@
 package com.aash.mailguard.jobs;
 
 import com.aash.mailguard.dto.EmailValidationResponse;
+import com.aash.mailguard.delivery.DeliveryEvidenceService.Snapshot;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -18,6 +19,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 @Repository
 public class JobStore {
@@ -41,17 +44,20 @@ public class JobStore {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final ObjectMapper mapper;
     private final int maxAttempts;
     private final int maxOutstanding;
 
     public JobStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
                     @Value("${jobs.max-attempts:3}") int maxAttempts,
-                    @Value("${jobs.max-outstanding:20000}") int maxOutstanding) {
+                    @Value("${jobs.max-outstanding:20000}") int maxOutstanding,
+                    ObjectMapper mapper) {
         if (maxAttempts < 1 || maxAttempts > 20 || maxOutstanding < 1 || maxOutstanding > 1000000) {
             throw new IllegalArgumentException("Invalid job admission configuration");
         }
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(transactionManager);
+        this.mapper = mapper;
         this.maxAttempts = maxAttempts;
         this.maxOutstanding = maxOutstanding;
     }
@@ -104,9 +110,10 @@ public class JobStore {
         List<JobStatus> rows = jdbc.query("""
                 SELECT id, state, attempts, max_attempts, due_at, created_at, finished_at,
                        failure_code, result_email, result_domain, result_format_valid,
-                       result_mx_record_found, result_smtp_verified, result_status, result_message
+                       result_mx_record_found, result_smtp_verified, result_status, result_message,
+                       result_historical_evidence::text AS historical_json
                 FROM verification_job WHERE id = ?
-                """, JobStore::mapStatus, id);
+                """, this::mapStatus, id);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
@@ -175,19 +182,22 @@ public class JobStore {
 
     public boolean complete(Claim claim, EmailValidationResponse response) {
         Objects.requireNonNull(response, "response");
+        String historicalJson = response.getHistoricalEvidence() == null ? null
+                : mapper.writeValueAsString(response.getHistoricalEvidence());
         return Boolean.TRUE.equals(transactions.execute(status -> {
             int updated = jdbc.update("""
                     UPDATE verification_job
                     SET state = 'COMPLETED', result_email = ?, result_domain = ?,
                         result_format_valid = ?, result_mx_record_found = ?, result_smtp_verified = ?,
-                        result_status = ?, result_message = ?, failure_code = NULL,
+                        result_status = ?, result_message = ?, result_historical_evidence = ?::jsonb,
+                        failure_code = NULL,
                         finished_at = clock_timestamp(), updated_at = clock_timestamp(),
                         lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL
                     WHERE id = ? AND email = ? AND state = 'RUNNING' AND lease_owner = ?
                       AND lease_token = ? AND lease_expires_at > clock_timestamp()
                     """, response.getEmail(), response.getDomain(), response.getFormatValid(),
                     response.getMxRecordFound(), response.getSmtpVerified(), response.getStatus(),
-                    response.getMessage(), claim.id(), response.getEmail(), claim.owner(), claim.token());
+                    response.getMessage(), historicalJson, claim.id(), response.getEmail(), claim.owner(), claim.token());
             if (updated == 0) {
                 return false;
             }
@@ -230,7 +240,7 @@ public class JobStore {
                 """, code, claim.id(), claim.owner(), claim.token()) == 1;
     }
 
-    private static JobStatus mapStatus(ResultSet rs, int row) throws SQLException {
+    private JobStatus mapStatus(ResultSet rs, int row) throws SQLException {
         String state = rs.getString("state");
         EmailValidationResponse response = null;
         if ("COMPLETED".equals(state)) {
@@ -242,6 +252,14 @@ public class JobStore {
             response.setSmtpVerified((Boolean) rs.getObject("result_smtp_verified"));
             response.setStatus(rs.getString("result_status"));
             response.setMessage(rs.getString("result_message"));
+            String historicalJson = rs.getString("historical_json");
+            if (historicalJson != null) {
+                try {
+                    response.setHistoricalEvidence(mapper.readValue(historicalJson, Snapshot.class));
+                } catch (JacksonException invalid) {
+                    throw new SQLException("Invalid persisted historical evidence", invalid);
+                }
+            }
         }
         Timestamp finishedAt = rs.getTimestamp("finished_at");
         return new JobStatus(rs.getObject("id", UUID.class), state, rs.getInt("attempts"),

@@ -1,8 +1,10 @@
 package com.aash.mailguard;
 
 import com.aash.mailguard.dto.EmailValidationResponse;
+import com.aash.mailguard.delivery.DeliveryEvidenceService.Snapshot;
 import com.aash.mailguard.jobs.JobStore;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -25,6 +27,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.springframework.transaction.PlatformTransactionManager;
+import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -55,6 +58,8 @@ class JobStoreTest {
     JdbcTemplate jdbc;
     @Autowired
     PlatformTransactionManager transactionManager;
+    @Autowired
+    ObjectMapper mapper;
 
     @BeforeEach
     void clearJobs() {
@@ -107,6 +112,27 @@ class JobStoreTest {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM email_validation_history WHERE job_id = ?", Integer.class, id));
         assertTrue(jobs.complete(claim, response("atomic@fixture.test")));
         assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE verification_job SET state = 'PENDING' WHERE id = ?", id));
+    }
+
+    @Test
+    void completedJobPersistsHistoricalSnapshotUnderTheLeaseFence() {
+        UUID id = jobs.submit("historical@fixture.test", null).id();
+        JobStore.Claim claim = jobs.claim("historical-worker", 1, Duration.ofSeconds(30)).getFirst();
+        EmailValidationResponse result = response("historical@fixture.test");
+        UUID eventId = UUID.randomUUID();
+        result.setHistoricalEvidence(new Snapshot(true, eventId, "COMPLAINT",
+                "COMPLAINT_POLICY", Instant.parse("2026-01-01T00:00:00Z"), "ADMIN_JSON",
+                "fixture", "STALE", true, "COMPLAINT", Instant.parse("2026-02-01T00:00:00Z"),
+                "Historical evidence does not prove mailbox existence"));
+        assertTrue(jobs.complete(claim, result));
+        assertFalse(jobs.complete(claim, result));
+        assertEquals("UNVERIFIED", jobs.find(id).orElseThrow().result().getStatus());
+        assertEquals(eventId, jobs.find(id).orElseThrow().result().getHistoricalEvidence().eventId());
+        assertEquals("COMPLAINT", jdbc.queryForObject(
+                "SELECT result_historical_evidence ->> 'eventType' FROM verification_job WHERE id = ?",
+                String.class, id));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT count(*) FROM email_validation_history WHERE job_id = ?", Integer.class, id));
     }
 
     @Test
@@ -199,7 +225,7 @@ class JobStoreTest {
 
     @Test
     void persistedBacklogCapRejectsNewWorkButAllowsReplayAndFreesSpaceOnCancellation() {
-        JobStore limited = new JobStore(jdbc, transactionManager, 3, 1);
+        JobStore limited = new JobStore(jdbc, transactionManager, 3, 1, mapper);
         UUID id = limited.submit("admitted@fixture.test", "same-key").id();
         assertThrows(JobStore.QueueFull.class, () -> limited.submit("blocked@fixture.test", null));
         assertEquals(id, limited.submit("admitted@fixture.test", "same-key").id());
