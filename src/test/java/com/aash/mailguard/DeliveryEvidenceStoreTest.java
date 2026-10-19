@@ -258,6 +258,131 @@ class DeliveryEvidenceStoreTest {
         }
     }
 
+    @Test
+    void indexedLatestLookupAndFreshInstallPersistAcrossSecondContext() {
+        UUID id = evidence.ingest(event("restart@example.test", EventType.DELIVERED, "persist",
+                Instant.now().truncatedTo(ChronoUnit.MICROS), null)).id();
+        List<String> indexes = jdbc.query("""
+                SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()
+                  AND tablename IN ('delivery_event', 'delivery_suppression')
+                """, (rs, row) -> rs.getString(1));
+        assertTrue(indexes.contains("idx_delivery_event_latest"));
+        assertTrue(indexes.contains("idx_delivery_suppression_active"));
+        String plan = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<String>) connection -> {
+            try (var statement = connection.createStatement()) {
+                statement.execute("SET enable_seqscan = off");
+                try (var rows = statement.executeQuery("""
+                        EXPLAIN SELECT id FROM delivery_event
+                        WHERE email_key = 'restart@example.test' AND revoked_at IS NULL
+                        ORDER BY occurred_at DESC, observed_at DESC, id DESC LIMIT 1
+                        """)) {
+                    var lines = new StringBuilder();
+                    while (rows.next()) lines.append(rows.getString(1));
+                    return lines.toString();
+                } finally {
+                    statement.execute("RESET enable_seqscan");
+                }
+            }
+        });
+        assertTrue(plan.contains("idx_delivery_event_latest"), plan);
+        try (ConfigurableApplicationContext restarted = new SpringApplicationBuilder(MailGuardApplication.class)
+                .web(WebApplicationType.NONE)
+                .run("--spring.datasource.url=" + postgres.getJdbcUrl(),
+                        "--spring.datasource.username=" + postgres.getUsername(),
+                        "--spring.datasource.password=" + postgres.getPassword(),
+                        "--jobs.worker.enabled=false", "--delivery.source-id=fixture-provider")) {
+            var fromRestart = restarted.getBean(DeliveryEvidenceService.class);
+            assertEquals(id, fromRestart.lookup("restart@example.test").eventId());
+            assertTrue(fromRestart.ingest(event("restart@example.test", EventType.DELIVERED, "persist",
+                    jdbc.queryForObject("SELECT occurred_at FROM delivery_event WHERE id = ?", java.sql.Timestamp.class, id).toInstant(), null)).reused());
+        }
+    }
+
+    @Test
+    void populatedV4MigratesToV5WithoutChangingExistingRows() {
+        String schema = "delivery_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE SCHEMA " + schema);
+        try {
+            Flyway v4 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).target("4").load();
+            assertEquals(4, v4.migrate().migrationsExecuted);
+            UUID job = UUID.randomUUID();
+            UUID batch = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".verification_job(id, email, request_fingerprint) "
+                    + "VALUES (?, 'legacy@example.test', decode(repeat('00', 32), 'hex'))", job);
+            Long history = jdbc.queryForObject("INSERT INTO " + schema
+                    + ".email_validation_history(email, job_id) VALUES ('legacy@example.test', ?) RETURNING id",
+                    Long.class, job);
+            jdbc.update("INSERT INTO " + schema + ".import_batch(id, state) VALUES (?, 'READY')", batch);
+            jdbc.update("INSERT INTO " + schema
+                    + ".import_row(import_id, ordinal, email, row_state, job_id) "
+                    + "VALUES (?, 1, 'legacy@example.test', 'ACCEPTED', ?)", batch, job);
+            Flyway v5 = Flyway.configure()
+                    .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                    .schemas(schema).createSchemas(false).load();
+            assertEquals(1, v5.migrate().migrationsExecuted);
+            assertEquals("5", v5.info().current().getVersion().getVersion());
+            assertEquals(0, v5.migrate().migrationsExecuted);
+            assertEquals(job, jdbc.queryForObject("SELECT job_id FROM " + schema
+                    + ".email_validation_history WHERE id = ?", UUID.class, history));
+            assertEquals(job, jdbc.queryForObject("SELECT job_id FROM " + schema
+                    + ".import_row WHERE import_id = ? AND ordinal = 1", UUID.class, batch));
+            assertEquals("READY", jdbc.queryForObject(
+                    "SELECT state FROM " + schema + ".import_batch WHERE id = ?", String.class, batch));
+            assertNull(jdbc.queryForObject("SELECT result_historical_evidence::text FROM " + schema
+                    + ".verification_job WHERE id = ?", String.class, job));
+            assertEquals(3, jdbc.queryForObject("""
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema = ? AND table_name IN
+                      ('delivery_identity', 'delivery_event', 'delivery_suppression')
+                    """, Integer.class, schema));
+        } finally {
+            jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void concurrentLookupsStayWithinPoolCapAndReleaseConnections() throws Exception {
+        UUID id = evidence.ingest(event("pool@example.test", EventType.DELIVERED, "pool",
+                Instant.now().truncatedTo(ChronoUnit.MICROS), null)).id();
+        CountDownLatch acquired = new CountDownLatch(4);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var holders = new ArrayList<Future<Boolean>>();
+            for (int i = 0; i < 4; i++) {
+                holders.add(executor.submit(() -> {
+                    try (var connection = poolDataSource.getConnection()) {
+                        acquired.countDown();
+                        return release.await(10, TimeUnit.SECONDS);
+                    }
+                }));
+            }
+            try {
+                assertTrue(acquired.await(10, TimeUnit.SECONDS));
+                assertEquals(4, poolDataSource.getHikariPoolMXBean().getActiveConnections());
+                CountDownLatch start = new CountDownLatch(1);
+                var readers = new ArrayList<Future<DeliveryEvidenceService.Snapshot>>();
+                for (int i = 0; i < 20; i++) {
+                    readers.add(executor.submit(() -> {
+                        start.await();
+                        return evidence.lookup("pool@example.test");
+                    }));
+                }
+                start.countDown();
+                for (var reader : readers) {
+                    assertEquals(id, reader.get(10, TimeUnit.SECONDS).eventId());
+                    assertTrue(poolDataSource.getHikariPoolMXBean().getActiveConnections()
+                            <= poolDataSource.getMaximumPoolSize());
+                }
+            } finally {
+                release.countDown();
+            }
+            for (var holder : holders) assertTrue(holder.get(10, TimeUnit.SECONDS));
+        }
+        assertEquals(0, poolDataSource.getHikariPoolMXBean().getActiveConnections());
+    }
+
     private int countSuppression(UUID eventId) {
         return jdbc.queryForObject("SELECT count(*) FROM delivery_suppression WHERE source_event_id = ?", Integer.class, eventId);
     }
