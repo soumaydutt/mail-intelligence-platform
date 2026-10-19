@@ -19,6 +19,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+
 @Service
 public class DeliveryEvidenceService {
     public enum EventType { HARD_BOUNCE, SOFT_BOUNCE, DELIVERED, COMPLAINT, UNSUBSCRIBED }
@@ -41,6 +42,7 @@ public class DeliveryEvidenceService {
     public record Suppression(UUID id, String email, String reason, Instant effectiveAt,
                               Instant expiresAt, boolean active, Instant liftedAt,
                               String liftingReason, UUID sourceEventId) { }
+
     public static class InvalidInput extends RuntimeException {
         public InvalidInput() { super("Invalid delivery evidence input"); }
     }
@@ -193,6 +195,26 @@ public class DeliveryEvidenceService {
             return true;
         }));
     }
+
+    public void revoke(UUID eventId, String reasonCode) {
+        validReason(reasonCode);
+        if (eventId == null) throw new InvalidInput();
+        String key = jdbc.query("SELECT email_key FROM delivery_event WHERE id = ?",
+                (rs, row) -> rs.getString(1), eventId).stream().findFirst().orElseThrow(NotFound::new);
+        Objects.requireNonNull(transactions.execute(tx -> {
+            lockIdentity(key);
+            if (jdbc.update("""
+                    UPDATE delivery_event SET revoked_at = clock_timestamp(), revocation_reason = ?
+                    WHERE id = ? AND revoked_at IS NULL
+                    """, reasonCode, eventId) != 1) throw new Conflict();
+            jdbc.update("""
+                    UPDATE delivery_suppression SET lifted_at = clock_timestamp(), lifting_reason = ?
+                    WHERE source_event_id = ? AND lifted_at IS NULL
+                    """, reasonCode, eventId);
+            return true;
+        }));
+    }
+
     public List<Suppression> suppressions(UUID after, int limit) {
         if (limit < 1 || limit > 100) throw new InvalidInput();
         return jdbc.query("""
