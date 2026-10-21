@@ -262,6 +262,70 @@ class DnsObservationCacheTest {
         verify(values, org.mockito.Mockito.times(2)).set(any(String.class), any(String.class), any(Duration.class));
     }
 
+    @Test
+    void concurrentMissesSingleFlight() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<Thread> followerThread = new AtomicReference<>();
+        DnsLookupService service = service(query -> {
+            calls.incrementAndGet();
+            entered.countDown();
+            if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("fixture timeout");
+            return answer(query, Rcode.NXDOMAIN, true);
+        }, true, 8192, 2, 500);
+        try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
+            Future<DnsObservation> leader = executor.submit(() -> service.lookup("fixture.test"));
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            Future<DnsObservation> follower = executor.submit(() -> {
+                followerThread.set(Thread.currentThread());
+                return service.lookup("fixture.test");
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while ((followerThread.get() == null || followerThread.get().getState() != Thread.State.TIMED_WAITING)
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(Thread.State.TIMED_WAITING, followerThread.get().getState());
+            release.countDown();
+            assertEquals(Reason.DOMAIN_NOT_FOUND, leader.get(5, TimeUnit.SECONDS).reason());
+            assertEquals(Reason.DOMAIN_NOT_FOUND, follower.get(5, TimeUnit.SECONDS).reason());
+        }
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void timedOutFollowerUsesDirectLookupAndLeaderSlotClears() throws Exception {
+        DnsObservationCache cache = new DnsObservationCache(redis, metrics, "local", 30, 5, 8192, 1, 20);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        java.util.function.Supplier<DnsObservationCache.Result> resolve = () -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("fixture timeout");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+            return new DnsObservationCache.Result(new DnsObservation(DnsObservation.Outcome.UNKNOWN,
+                    Reason.DNS_TEMPORARY_FAILURE, "fixture.test", List.of(), true,
+                    java.time.Instant.parse("2026-01-01T00:00:00Z")), 0, 0);
+        };
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<DnsObservation> leader = executor.submit(() -> cache.lookup("fixture.test", resolve));
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(Reason.DNS_TEMPORARY_FAILURE, cache.lookup("fixture.test", resolve).reason());
+            release.countDown();
+            leader.get(5, TimeUnit.SECONDS);
+        }
+        cache.lookup("fixture.test", resolve);
+        assertEquals(3, calls.get());
+    }
+
     private DnsLookupService service(Answer answer, boolean enabled, int maxBytes, int inflight, int waitMillis)
             throws Exception {
         Resolver resolver = mock(Resolver.class);
