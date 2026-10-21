@@ -78,7 +78,7 @@ Phase 9 uses V5 only: a trusted administrative JSON event source, exact external
 
 The approved Step 2 email syntax engine (D-021) is a focused milestone before the durable-core Phase 2 above. It changes syntax classification and domain normalization without adding the worker, PostgreSQL, CSV processing, or SMTP behavior.
 
-The Engine 2 DNS/MX milestone (D-022) added bounded injectable DNS routing, ordered MX-target checks, and legacy response mapping. Its DNS observations remain in memory; Phase 9 persists only separately sourced historical delivery events. Phase 7 supplies jobs and Phase 8 supplies CSV staging/export. Valkey TTL caching and production SMTP integration remain unimplemented.
+The Engine 2 DNS/MX milestone (D-022) added bounded injectable DNS routing, ordered MX-target checks, and legacy response mapping. Phase 10 adds optional disposable DNS-observation caching around that resolver; it does not cache validation responses or Phase 9's mutable PostgreSQL evidence. Phase 7 supplies jobs, Phase 8 supplies CSV staging/export, and Phase 9 persists authorized delivery events. Production SMTP integration remains unimplemented.
 
 The internal evidence classifier (D-024) is a focused PR #5 milestone, not completion of Phase 5 local product above. It combines syntax, DNS, and optional fixture-only SMTP observations in memory; no typed-evidence persistence, new API fields, SMTP activation, worker, or UI is implied.
 
