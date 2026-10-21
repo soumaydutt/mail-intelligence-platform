@@ -176,6 +176,39 @@ class Phase10HttpEndToEndTest {
         }
     }
 
+    @Test
+    void startupWithoutValkeyKeepsBoundedPublicDnsButBlocksAuthorizedAdmin() throws Exception {
+        FixtureDnsConfiguration.queries.set(0);
+        try (HttpClient http = HttpClient.newHttpClient();
+                ConfigurableApplicationContext api = new SpringApplicationBuilder(
+                        MailGuardApplication.class, FixtureDnsConfiguration.class)
+                        .web(WebApplicationType.SERVLET)
+                        .run("--server.port=0", "--spring.datasource.url=" + postgres.getJdbcUrl(),
+                                "--spring.datasource.username=" + postgres.getUsername(),
+                                "--spring.datasource.password=" + postgres.getPassword(),
+                                "--spring.data.redis.host=127.0.0.1", "--spring.data.redis.port=1",
+                                "--valkey.namespace=unreachable-" + UUID.randomUUID().toString().substring(0, 8),
+                                "--dns.cache.enabled=true", "--rate-limit.enabled=true",
+                                "--rate-limit.identity-secret=synthetic-phase10-secret-has-32-characters",
+                                "--jobs.api-key=" + KEY, "--jobs.worker.enabled=false")) {
+            int port = api.getEnvironment().getProperty("local.server.port", Integer.class);
+            URI base = URI.create("http://127.0.0.1:" + port);
+            for (int i = 0; i < 2; i++) {
+                HttpResponse<String> publicResult = send(http, base, "POST", "/api/email/validate",
+                        "{\"email\":\"offline@fixture.test\"}", null);
+                assertEquals(200, publicResult.statusCode(), publicResult.body());
+                assertEquals("30", publicResult.headers().firstValue("RateLimit-Limit").orElseThrow());
+            }
+            assertEquals(4, FixtureDnsConfiguration.queries.get(),
+                    "An unavailable cache must not return stale or false-negative DNS evidence");
+            String path = "/api/jobs/" + UUID.randomUUID();
+            assertEquals(401, send(http, base, "GET", path, null, null).statusCode());
+            HttpResponse<String> admin = send(http, base, "GET", path, null, KEY);
+            assertEquals(503, admin.statusCode(), admin.body());
+            assertEquals("no-store", admin.headers().firstValue("Cache-Control").orElseThrow());
+        }
+    }
+
     private static JsonNode await(HttpClient http, URI base, String path, String field, String target)
             throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(25).toNanos();
