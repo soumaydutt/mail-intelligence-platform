@@ -7,7 +7,7 @@
 
 MailGuard exposes a synchronous, passive email check: local format validation followed by bounded DNS routing observation. It does not verify a mailbox or send email.
 
-This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The broader email intelligence architecture in [PLAN.md](PLAN.md) is planned, not implemented.
+This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The implemented API, worker, storage and browser slices are described below; [PLAN.md](PLAN.md) separates them from the larger unimplemented product.
 
 ---
 ## ✨ Features
@@ -19,6 +19,7 @@ This repository preserves the history and attribution of [the original MailGuard
 - ✔ PostgreSQL validation history with versioned Flyway schema
 - ✔ PostgreSQL-backed single-address jobs with a separately runnable, bounded worker
 - ✔ Authorized historical delivery events, audit-preserving suppressions, and optional validation evidence (Phase 9)
+- ✔ React/TypeScript/Vite single-principal local operations dashboard (Phase 11)
 - ✔ Maven project
 
 ## 📦 Installation
@@ -187,6 +188,35 @@ If Valkey is unavailable, authenticated administrative routes fail closed with H
 Operator-only metric names: `dns.resolver.lookup` and `dns.cache.lookup` timers, `dns.cache.operations` with fixed `result` values, `mailguard.http.rate.backend` timer with fixed policy, and `mailguard.http.rate.requests` with fixed policy/result. No raw address, request path, API key, peer IP or DNS domain is a metric label.
 
 Optional, **do not run in default verification**: `mvn -B "-Dvalkey.benchmark=true" "-Dtest=Phase10BenchmarkTest" test` starts disposable PostgreSQL and Valkey containers. Six synthetic cases report cached/uncached DNS latency, concurrent cache-hit throughput, Redis token-bucket overhead, Valkey GET latency, and a 300-row real API/worker CSV import both with and without cache. DNS is a loopback-free in-process fixture, not an external resolver; results are local measurements only, not a production throughput or p95 promise.
+
+## React operations dashboard (Phase 11)
+
+The separate [React/TypeScript/Vite client](frontend/) uses the existing API without changing its routes or sharing backend credentials with Vite. It displays live health, individual validation, CSV imports with ordered results and export, jobs, exact-address delivery evidence, and suppression management. [The endpoint inventory](frontend/API.md) records method, authorization, response and pagination contracts. Import progress accepts the complete backend state machine: `INGESTING`, `READY`, `PROCESSING`, `COMPLETED`, `FAILED`, `CANCELLED`; the first three continue polling and only the last three stop it. Session history contains only the ten most recent validations performed in this tab. Recent jobs and imports each retain up to 50 distinct IDs in newest-first order; they appear only when opened in this session or by entering a known UUID. The backend offers no global lists or validation-history read endpoint. There are no fabricated activity totals. The UI preserves `UNVERIFIED`, nullable MX/SMTP, and stale or unavailable historical evidence as uncertainty, not deliverability.
+
+For local development, start PostgreSQL and Valkey as documented above. In one PowerShell terminal, set `DB_URL`, `DB_USERNAME` and `DB_PASSWORD` to the existing local Compose database, generate a private `JOBS_API_KEY`, and run the API. For the independent worker, use the same database and key variables in another terminal; set `JOBS_WORKER_ENABLED=true`, then run the packaged jar with `--spring.main.web-application-type=none`. For trusted delivery-event ingestion also configure a stable nonempty `DELIVERY_SOURCE_ID`; do not submit synthetic events outside disposable tests. Never paste the administrative key into a `VITE_*` variable or a URL.
+
+```powershell
+# API terminal, after local PostgreSQL/Valkey start; set DB_* as above.
+$secret = Read-Host 'Local administrator API key' -AsSecureString
+$env:JOBS_API_KEY = [System.Net.NetworkCredential]::new('', $secret).Password
+mvn -B package
+java -jar target/mailguard-0.0.1-SNAPSHOT.jar
+
+# Separate worker terminal: copy the same DB_* and JOBS_API_KEY securely.
+$env:JOBS_WORKER_ENABLED = 'true'
+java -jar target/mailguard-0.0.1-SNAPSHOT.jar --spring.main.web-application-type=none
+
+# Separate frontend terminal:
+cd frontend
+npm ci
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The development server proxies `/api` and `/actuator/health` to `http://127.0.0.1:8080`; override only its upstream URL with `API_PROXY_TARGET` when the backend uses another local port. The browser uses relative same-origin paths, `credentials: omit`, `cache: no-store`, and a short-lived in-memory administrative key entered via **Connect**. The key disappears on disconnect, reload or tab close. Only the visual theme persists in localStorage when permitted; blocked or unavailable storage falls back to light and theme switching still works in memory. This shared key controls all administrative records, not user accounts or tenant access. Do not publish this UI or expose the dev proxy as a production auth boundary.
+
+Production serving requires a separately approved TLS reverse proxy serving `frontend/dist` and forwarding `/api/*` plus `/actuator/health` to the API on the **same origin**, with SPA deep-link fallback to `index.html` only for frontend routes. Restrict key distribution, exports, address history and proxy logs; do not enable wildcard CORS or embed the shared key in built assets. Add owner-scoped authorization, approved retention/deletion and backup policy, deployment egress controls, and production identity before internet or multi-user exposure. Phase 11 does not add those controls.
+
+Dashboard checks from `frontend/`: `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build`; then `npx playwright install chromium`, `mvn -B package` from repo root, and `npm run test:e2e` from `frontend/`. Browser tests start uniquely named disposable PostgreSQL 17 and Valkey 8 containers and the packaged API plus headless worker. They reserve ports `127.0.0.1:18094`, `127.0.0.1:16393` and `127.0.0.1:5173`, create no persistent volumes, and remove only their own containers and child processes. Docker Linux daemon and Java 21 must be available. The tests use synthetic addresses; they never contact SMTP.
 
 ## 📧 Email Validation
 ### Validate an Email Address
