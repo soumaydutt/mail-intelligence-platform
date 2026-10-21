@@ -178,6 +178,55 @@ class HttpRateLimitTest {
     }
 
     @Test
+    void localFallbackCannotBeResetByIntermittentHealthyOrRejectedAdmission() throws Exception {
+        when(redis.takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt()))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"))
+                .thenReturn(reply(true, true, 500))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"))
+                .thenReturn(reply(false, true, 500))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"));
+        HandlerMethod validation = handler(EmailValidationHistoryController.class, "validate");
+        HandlerMethod test = handler(EmailValidationHistoryController.class, "test");
+        assertTrue(limiter.preHandle(request("/api/email/validate", "192.0.2.4", false),
+                new MockHttpServletResponse(), validation));
+        MockHttpServletResponse firstDenial = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/email/test", "192.0.2.5", false), firstDenial, test));
+        assertEquals(429, firstDenial.getStatus());
+        assertTrue(limiter.preHandle(request("/api/email/test", "192.0.2.6", false),
+                new MockHttpServletResponse(), test));
+        for (int i = 0; i < 3; i++) {
+            MockHttpServletResponse rejected = new MockHttpServletResponse();
+            assertFalse(limiter.preHandle(request("/api/email/test", "192.0.2.7", false),
+                    rejected, test));
+            assertEquals(429, rejected.getStatus());
+        }
+        org.springframework.test.util.ReflectionTestUtils.setField(limiter, "fallbackStarted",
+                System.nanoTime() - java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
+        assertTrue(limiter.preHandle(request("/api/email/test", "192.0.2.7", false),
+                new MockHttpServletResponse(), test));
+    }
+
+    @Test
+    void administrativeSuccessDoesNotResetLocalOutageQuota() throws Exception {
+        when(redis.takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt()))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"));
+        when(redis.take(contains(":job_read:admin"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500));
+        HandlerMethod validation = handler(EmailValidationHistoryController.class, "validate");
+        assertTrue(limiter.preHandle(request("/api/email/validate", "192.0.2.4", false),
+                new MockHttpServletResponse(), validation));
+        assertTrue(limiter.preHandle(request("/api/jobs/id", "192.0.2.4", true),
+                new MockHttpServletResponse(), handler(JobController.class, "get")));
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/email/validate", "192.0.2.4", false),
+                denied, validation));
+        assertEquals(429, denied.getStatus());
+        verify(redis, times(2)).takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt());
+    }
+
+    @Test
     void rejectsBeforeBodyParsingAndLeavesSuccessfulBodyUntouched() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(
                 new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY))
@@ -213,6 +262,27 @@ class HttpRateLimitTest {
         verifyNoInteractions(redis);
     }
 
+    @Test
+    void rejectsInvalidEnabledConfigurationButDisabledNeedsNoValkeySecret() {
+        assertFalse(new RateLimitSettings(false, "", "local", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0).enabled());
+        assertThrows(IllegalArgumentException.class, () -> new RateLimitSettings(true, "short", "local", 60,
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new RateLimitSettings(true, SECRET, "unsafe:namespace", 60,
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new RateLimitSettings(true, SECRET, "local", 60,
+                1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new RateLimitSettings(true, SECRET, "local", 3601,
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new RateLimitSettings(true, SECRET, "local", 60,
+                1, 100001, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
+        var disabled = new HttpRateLimit(new RateLimitSettings(false, "", "local", 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), redis,
+                new SimpleMeterRegistry(), new ObjectMapper(), "");
+        assertDoesNotThrow(() -> assertTrue(disabled.preHandle(
+                request("/api/email/test", "192.0.2.1", false), new MockHttpServletResponse(),
+                handler(EmailValidationHistoryController.class, "test"))));
+        verifyNoInteractions(redis);
+    }
     @RestController
     static class UnmappedController {
         @RequestMapping(path = "/api/custom", method = RequestMethod.OPTIONS)
