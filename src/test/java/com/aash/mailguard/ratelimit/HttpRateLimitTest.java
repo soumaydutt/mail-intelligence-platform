@@ -124,6 +124,95 @@ class HttpRateLimitTest {
         assertFalse(keys.get(0).contains("203.0.113.123"));
     }
 
+    @Test
+    void unauthorizedUploadCannotContactBackendAndExportFailsClosedOnOutage() throws Exception {
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/imports", "192.0.2.4", false), denied,
+                handler(BulkImportController.class, "create")));
+        assertEquals(401, denied.getStatus());
+        MockHttpServletRequest invalidKey = request("/api/email/validate", "192.0.2.4", false);
+        invalidKey.addHeader("X-Job-API-Key", "wrong");
+        assertFalse(limiter.preHandle(invalidKey, new MockHttpServletResponse(),
+                handler(EmailValidationHistoryController.class, "validate")));
+        verifyNoInteractions(redis);
+        when(redis.take(anyString(), anyInt(), anyInt()))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"));
+        MockHttpServletResponse outage = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/imports/id/export", "192.0.2.4", true), outage,
+                handler(BulkImportController.class, "export")));
+        assertEquals(503, outage.getStatus());
+        assertEquals("no-store", outage.getHeader("Cache-Control"));
+        assertFalse(outage.getContentAsString().contains("/id/"));
+    }
+
+    @Test
+    void authorizedUploadAndExportUseFixedAdminKeys() throws Exception {
+        when(redis.take(anyString(), anyInt(), anyInt()))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 1500));
+        assertTrue(limiter.preHandle(request("/api/imports", "192.0.2.4", true),
+                new MockHttpServletResponse(), handler(BulkImportController.class, "create")));
+        assertTrue(limiter.preHandle(request("/api/imports/random-id/export", "192.0.2.5", true),
+                new MockHttpServletResponse(), handler(BulkImportController.class, "export")));
+        var keys = mockingDetails(redis).getInvocations().stream()
+                .filter(call -> call.getMethod().getName().equals("take"))
+                .map(call -> (String) call.getArgument(0)).toList();
+        assertEquals("fixture:http-limit:v1:import_write:admin", keys.get(0));
+        assertEquals("fixture:http-limit:v1:export:admin", keys.get(1));
+    }
+
+    @Test
+    void exhaustedUploadQuotaRejectsBeforeParsingOrStagingMultipart() throws Exception {
+        BulkImportStore store = mock(BulkImportStore.class);
+        CsvImportService csv = mock(CsvImportService.class);
+        var mvc = MockMvcBuilders.standaloneSetup(new BulkImportController(store, csv, KEY, 500))
+                .addInterceptors(limiter).build();
+        when(redis.take(contains("import_write:admin"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(false, 0, 1200));
+        mvc.perform(post("/api/imports").header("X-Job-API-Key", KEY)
+                        .contentType(MediaType.MULTIPART_FORM_DATA).content("invalid multipart body"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "2"))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.status").value(429));
+        verifyNoInteractions(store, csv);
+    }
+
+    @Test
+    void rejectsBeforeBodyParsingAndLeavesSuccessfulBodyUntouched() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(
+                new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY))
+                .addInterceptors(limiter).build();
+        when(redis.takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt()))
+                .thenReturn(reply(false, true, 1200));
+        mvc.perform(post("/api/email/validate").contentType(MediaType.APPLICATION_JSON).content("{"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "2"))
+                .andExpect(jsonPath("$.status").value(429));
+        reset(redis);
+        when(redis.takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt()))
+                .thenReturn(reply(true, true, 500));
+        mvc.perform(post("/api/email/test")).andExpect(status().isOk())
+                .andExpect(content().string("MailGuard API Working"));
+    }
+
+    @Test
+    void everyMappedApiMethodHasPolicyAndWorkersHaveNoHttpAdmission() throws Exception {
+        for (Class<?> type : new Class<?>[] {EmailValidationHistoryController.class, JobController.class,
+                BulkImportController.class, DeliveryController.class}) {
+            for (Method method : type.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(org.springframework.web.bind.annotation.GetMapping.class)
+                        || method.isAnnotationPresent(org.springframework.web.bind.annotation.PostMapping.class)
+                        || method.isAnnotationPresent(org.springframework.web.bind.annotation.DeleteMapping.class)) {
+                    assertNotNull(HttpRateLimit.policy(new HandlerMethod(mock(type), method)),
+                            type.getSimpleName() + "." + method.getName());
+                }
+            }
+        }
+        assertTrue(limiter.preHandle(request("/internal/worker", "192.0.2.8", false),
+                new MockHttpServletResponse(), new Object()));
+        verifyNoInteractions(redis);
+    }
+
     @RestController
     static class UnmappedController {
         @RequestMapping(path = "/api/custom", method = RequestMethod.OPTIONS)
