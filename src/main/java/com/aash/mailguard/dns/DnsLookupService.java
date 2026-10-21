@@ -3,6 +3,10 @@ package com.aash.mailguard.dns;
 import com.aash.mailguard.dns.DnsObservation.MxHost;
 import com.aash.mailguard.dns.DnsObservation.Outcome;
 import com.aash.mailguard.dns.DnsObservation.Reason;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.xbill.DNS.AAAARecord;
 import org.xbill.DNS.ARecord;
@@ -17,21 +21,25 @@ import org.xbill.DNS.Opcode;
 import org.xbill.DNS.Rcode;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.Resolver;
+import org.xbill.DNS.SOARecord;
 import org.xbill.DNS.Section;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.IDN;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class DnsLookupService {
@@ -42,6 +50,8 @@ public class DnsLookupService {
     private static final int MAX_ANSWER_RECORDS = 128;
 
     private final Resolver resolver;
+    private final DnsObservationCache cache;
+    private final MeterRegistry metrics;
     private final Semaphore admission = new Semaphore(MAX_IN_FLIGHT);
 
     public DnsLookupService() {
@@ -50,6 +60,32 @@ public class DnsLookupService {
 
     DnsLookupService(Resolver resolver) {
         this.resolver = Objects.requireNonNull(resolver);
+        this.cache = null;
+        this.metrics = null;
+    }
+
+    @Autowired
+    public DnsLookupService(StringRedisTemplate redis, MeterRegistry metrics,
+                            @Value("${valkey.namespace:local}") String namespace,
+                            @Value("${dns.cache.enabled:false}") boolean enabled,
+                            @Value("${dns.cache.positive-ttl-seconds:30}") int positiveTtlSeconds,
+                            @Value("${dns.cache.negative-ttl-seconds:5}") int negativeTtlSeconds,
+                            @Value("${dns.cache.max-entry-bytes:8192}") int maxEntryBytes,
+                            @Value("${dns.cache.max-inflight:128}") int maxInflight,
+                            @Value("${dns.cache.wait-millis:2500}") int waitMillis) {
+        this(defaultResolver(), redis, metrics, namespace, enabled, positiveTtlSeconds, negativeTtlSeconds,
+                maxEntryBytes, maxInflight, waitMillis);
+    }
+
+    DnsLookupService(Resolver resolver, StringRedisTemplate redis, MeterRegistry metrics, String namespace,
+                     boolean enabled, int positiveTtlSeconds, int negativeTtlSeconds, int maxEntryBytes,
+                     int maxInflight, int waitMillis) {
+        this.resolver = Objects.requireNonNull(resolver);
+        this.metrics = metrics;
+        DnsObservationCache.validateSettings(namespace, positiveTtlSeconds, negativeTtlSeconds,
+                maxEntryBytes, maxInflight, waitMillis);
+        this.cache = enabled ? new DnsObservationCache(redis, metrics, namespace, positiveTtlSeconds,
+                negativeTtlSeconds, maxEntryBytes, maxInflight, waitMillis) : null;
     }
 
     private static Resolver defaultResolver() {
@@ -62,7 +98,56 @@ public class DnsLookupService {
         return configured;
     }
 
+    private static String canonical(String domain) {
+        if (domain == null || domain.isEmpty()) {
+            return null;
+        }
+        try {
+            String ascii = IDN.toASCII(domain.endsWith(".") ? domain.substring(0, domain.length() - 1) : domain,
+                    IDN.USE_STD3_ASCII_RULES).toLowerCase(Locale.ROOT);
+            Name name = Name.fromString(ascii, Name.root);
+            return name.isAbsolute() && ascii.length() <= 253 ? ascii : null;
+        } catch (IllegalArgumentException | TextParseException e) {
+            return null;
+        }
+    }
+
     public DnsObservation lookup(String canonicalAsciiDomain) {
+        if (cache != null) {
+            String normalized = canonical(canonicalAsciiDomain);
+            if (normalized != null) {
+                return cache.lookup(normalized, () -> lookupMeasured(normalized));
+            }
+        }
+        long started = System.nanoTime();
+        try {
+            return lookupDirect(canonicalAsciiDomain, null);
+        } finally {
+            recordDnsDuration(started);
+        }
+    }
+
+    private DnsObservationCache.Result lookupMeasured(String domain) {
+        long started = System.nanoTime();
+        TtlEvidence ttl = new TtlEvidence();
+        try {
+            DnsObservation observation = lookupDirect(domain, ttl);
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) + 1;
+            return new DnsObservationCache.Result(observation,
+                    Math.max(0, ttl.positive() * 1000 - elapsedMillis),
+                    Math.max(0, ttl.negative() * 1000 - elapsedMillis));
+        } finally {
+            recordDnsDuration(started);
+        }
+    }
+
+    private void recordDnsDuration(long started) {
+        if (metrics != null) {
+            metrics.timer("dns.resolver.lookup").record(System.nanoTime() - started, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    private DnsObservation lookupDirect(String canonicalAsciiDomain, TtlEvidence ttl) {
         Name owner;
         try {
             if (canonicalAsciiDomain == null || canonicalAsciiDomain.isEmpty()) {
@@ -81,7 +166,7 @@ public class DnsLookupService {
         }
         try {
             int[] queries = {0};
-            Answer mxAnswer = resolve(owner, Type.MX, queries);
+            Answer mxAnswer = resolve(owner, Type.MX, queries, ttl);
             if (mxAnswer.failure() != null) {
                 return observation(canonicalAsciiDomain, mxAnswer.failure(), List.of());
             }
@@ -121,7 +206,7 @@ public class DnsLookupService {
                     if (queries[0] == MAX_QUERIES) {
                         return observation(canonicalAsciiDomain, Reason.DNS_QUERY_BUDGET_EXCEEDED, hosts);
                     }
-                    Reason address = addressEvidence(target, queries, true);
+                    Reason address = addressEvidence(target, queries, true, ttl);
                     switch (address) {
                         case IMPLICIT_MX -> {
                             return observation(canonicalAsciiDomain,
@@ -142,7 +227,7 @@ public class DnsLookupService {
                         hosts);
             }
 
-            Reason address = addressEvidence(mxAnswer.owner(), queries, false);
+            Reason address = addressEvidence(mxAnswer.owner(), queries, false, ttl);
             return observation(canonicalAsciiDomain,
                     address == Reason.DOMAIN_NOT_FOUND ? Reason.DNS_MALFORMED_RESPONSE : address, List.of());
         } finally {
@@ -150,12 +235,12 @@ public class DnsLookupService {
         }
     }
 
-    private Reason addressEvidence(Name owner, int[] queries, boolean mxTarget) {
+    private Reason addressEvidence(Name owner, int[] queries, boolean mxTarget, TtlEvidence ttl) {
         Reason failure = null;
         boolean noData = false;
         for (int attempt = 0; attempt < 2; attempt++) {
             int type = attempt == 0 ? Type.A : Type.AAAA;
-            Answer address = resolve(owner, type, queries);
+            Answer address = resolve(owner, type, queries, ttl);
             if (address.failure() == Reason.DNS_QUERY_BUDGET_EXCEEDED) {
                 return Reason.DNS_QUERY_BUDGET_EXCEEDED;
             }
@@ -180,7 +265,7 @@ public class DnsLookupService {
         return failure == null ? Reason.NO_MAIL_ROUTE : failure;
     }
 
-    private Answer resolve(Name initial, int type, int[] queries) {
+    private Answer resolve(Name initial, int type, int[] queries, TtlEvidence ttl) {
         Set<Name> seen = new HashSet<>();
         Name owner = initial;
         List<Record> inline = null;
@@ -219,6 +304,9 @@ public class DnsLookupService {
                     case Rcode.NXDOMAIN -> {
                         if (reply.getHeader().getCount(Section.ANSWER) != 0) {
                             return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
+                        }
+                        if (ttl != null) {
+                            ttl.negative(reply, owner);
                         }
                         return new Answer(owner, List.of(), seen.size() > 1 ? Reason.DNS_ALIAS_FAILURE : Reason.DOMAIN_NOT_FOUND);
                     }
@@ -266,6 +354,19 @@ public class DnsLookupService {
                     }
                 }
             }
+            if (ttl != null) {
+                if (alias != null) {
+                    for (Record record : answer) {
+                        if (record.getName().equals(owner) && record instanceof CNAMERecord) {
+                            ttl.positive(record.getTTL());
+                        }
+                    }
+                } else if (matching != null) {
+                    for (Record record : matching) {
+                        ttl.positive(record.getTTL());
+                    }
+                }
+            }
             if (alias != null) {
                 if (matching != null) {
                     return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
@@ -294,7 +395,46 @@ public class DnsLookupService {
                     && !hasNegativeAuthority(reply)) {
                 return new Answer(owner, List.of(), Reason.DNS_MALFORMED_RESPONSE);
             }
+            if (ttl != null && matching == null && reply != null) {
+                ttl.negative(reply, owner);
+            }
             return new Answer(owner, matching == null ? List.of() : matching, null);
+        }
+    }
+
+    private static final class TtlEvidence {
+        private long positive = Long.MAX_VALUE;
+        private long negative = Long.MAX_VALUE;
+        private boolean negativeProved = true;
+
+        void positive(long seconds) {
+            positive = Math.min(positive, seconds);
+        }
+
+        void negative(Message reply, Name owner) {
+            SOARecord soa = null;
+            for (Record record : reply.getSection(Section.AUTHORITY)) {
+                if (record instanceof SOARecord found && record.getDClass() == DClass.IN
+                        && owner.subdomain(found.getName()) && soa == null) {
+                    soa = found;
+                } else {
+                    negativeProved = false;
+                }
+            }
+            if (soa == null) {
+                negativeProved = false;
+            } else {
+                negative = Math.min(negative, Math.min(soa.getTTL(), soa.getMinimum()));
+            }
+        }
+
+        long positive() {
+            return positive == Long.MAX_VALUE ? 0 : positive;
+        }
+
+        long negative() {
+            return negativeProved && negative != Long.MAX_VALUE
+                    ? Math.min(negative, positive) : 0;
         }
     }
 
