@@ -252,6 +252,57 @@ class Phase10HttpEndToEndTest {
         }
     }
 
+    @Test
+    void optInBenchmarkContextsStartWithBoundedNamespacesWithoutRunningWorkloads() throws Exception {
+        String dnsNamespace = Phase10BenchmarkTest.namespace("dns-benchmark-");
+        String bulkNamespace = Phase10BenchmarkTest.namespace("bulk-benchmark-");
+        assertTrue(dnsNamespace.length() <= 32);
+        assertTrue(bulkNamespace.length() <= 32);
+        assertNotEquals(dnsNamespace, Phase10BenchmarkTest.namespace("dns-benchmark-"));
+        for (boolean cacheEnabled : new boolean[] {false, true}) {
+            assertNotNull(new DnsLookupService(mock(Resolver.class), mock(StringRedisTemplate.class),
+                    new SimpleMeterRegistry(), dnsNamespace, cacheEnabled, 30, 5, 8192, 128, 2500));
+            assertThrows(IllegalArgumentException.class, () -> new DnsLookupService(
+                    mock(Resolver.class), mock(StringRedisTemplate.class), new SimpleMeterRegistry(),
+                    "dns-benchmark-" + UUID.randomUUID(), cacheEnabled, 30, 5, 8192, 128, 2500));
+
+            String[] common = {
+                    "--spring.datasource.url=" + postgres.getJdbcUrl(),
+                    "--spring.datasource.username=" + postgres.getUsername(),
+                    "--spring.datasource.password=" + postgres.getPassword(),
+                    "--spring.data.redis.host=" + valkey.getHost(),
+                    "--spring.data.redis.port=" + valkey.getMappedPort(6379),
+                    "--valkey.namespace=" + bulkNamespace,
+                    "--dns.cache.enabled=" + cacheEnabled,
+                    "--jobs.api-key=" + KEY
+            };
+            String[] apiArgs = java.util.Arrays.copyOf(common, common.length + 2);
+            apiArgs[common.length] = "--server.port=0";
+            apiArgs[common.length + 1] = "--jobs.worker.enabled=false";
+            String[] workerArgs = java.util.Arrays.copyOf(common, common.length + 1);
+            workerArgs[common.length] = "--jobs.worker.enabled=true";
+            Phase10BenchmarkTest.FixtureDnsConfiguration.queries.set(0);
+            try (HttpClient http = HttpClient.newHttpClient();
+                    ConfigurableApplicationContext api = new SpringApplicationBuilder(
+                            MailGuardApplication.class, Phase10BenchmarkTest.FixtureDnsConfiguration.class)
+                            .web(WebApplicationType.SERVLET).run(apiArgs);
+                    ConfigurableApplicationContext worker = new SpringApplicationBuilder(
+                            MailGuardApplication.class, Phase10BenchmarkTest.FixtureDnsConfiguration.class)
+                            .web(WebApplicationType.NONE).run(workerArgs)) {
+                int port = api.getEnvironment().getProperty("local.server.port", Integer.class);
+                URI base = URI.create("http://127.0.0.1:" + port);
+                for (int i = 0; i < 2; i++) {
+                    HttpResponse<String> result = send(http, base, "POST", "/api/email/validate",
+                            "{\"email\":\"benchmark@fixture.test\"}", null);
+                    assertEquals(200, result.statusCode(), result.body());
+                    assertEquals("UNVERIFIED", json.readTree(result.body()).get("status").asText());
+                }
+                assertEquals(cacheEnabled ? 2 : 4, Phase10BenchmarkTest.FixtureDnsConfiguration.queries.get());
+                assertNotNull(worker.getBean(DnsLookupService.class));
+            }
+        }
+    }
+
     private static JsonNode await(HttpClient http, URI base, String path, String field, String target)
             throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(25).toNanos();
