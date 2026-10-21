@@ -77,6 +77,10 @@ public class GlobalExceptionHandler {
                 : eventRoute ? "/api/delivery-events" : evidenceRoute ? "/api/delivery-evidence/lookup"
                 : suppressionRoute ? "/api/suppressions"
                 : path.equals("/api/email/validate") || path.equals("/api/email/test") ? path : "/");
+        if (status == HttpStatus.TOO_MANY_REQUESTS) {
+            return ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    .header(HttpHeaders.RETRY_AFTER, "1").body(errorResponse);
+        }
         return deliveryRoute
                 ? ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store").body(errorResponse)
                 : new ResponseEntity<>(errorResponse, status);
