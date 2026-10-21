@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #1–#8 are merged into fetched `origin/main` at `bc5d39f63fdb98910e9094377012029fc8b682ca`. Phase 9 is implemented in 24 local commits on `feature/historical-delivery-evidence`; no push, PR, merge or deployment was performed. Additive Flyway V5 stores authorized delivery observations and suppression audit records alongside unchanged V1–V4 history, jobs, imports, and terminal snapshots. PostgreSQL tests and a packaged API/headless-worker smoke verify this slice; [PROGRESS.md](PROGRESS.md) records commands and limits. The in-memory syntax/DNS/SMTP classifier remains separate. Valkey, UI, tenant authorization, approved retention/deletion, production egress and the complete local product remain open. The owner's two irrelevant MySQL rows remain excluded. Historical audit findings below describe their original checkpoints, not today's code.
+Status: PR #10 merged Phase 9 into fetched `origin/main` at `6467083aafc96ada1ee08ab43db78cc80f75e119`. Phase 10 is being prepared without commits in isolated `feature/valkey-cache-rate-limiting`; this is not a deployment or independent review verdict. PostgreSQL/Flyway V1–V5 remain authoritative for history, jobs, imports and delivery evidence. Valkey is limited to disposable DNS observations and HTTP admission state; UI, tenant authorization, approved retention/deletion, production egress and the complete local product remain open. The owner's two irrelevant MySQL rows remain excluded.
 
 ## Goals and current scope
 
@@ -90,11 +90,13 @@ Phase 7 local scope (D-028): Flyway V2 adds `verification_job` and a nullable un
 
 Phase 7 audit remediation: cancellation reports HTTP 200 only when it made an active job CANCELLED or found it already CANCELLED; terminal COMPLETED/FAILED returns 409 and unknown IDs return 404. A competing completion holds the same row lock and only one outcome commits. The single shared key fails closed for POST/GET/DELETE but remains one trusted principal with global idempotency keys, not tenant authorization. Idempotency compares the decoded email's exact UTF-8 bytes; domain-case variants conflict, and local-part case is preserved. No retention or erasure exists: later approval must set periods/legal holds and a transactional linked-history-first deletion sequence, plus independent synchronous-history and backup policies. No scheduled cleanup is part of this phase.
 
+Phase 10 local scope (D-035–D-036): Add opt-in Valkey caching with a bounded DNS TTL and strict positive/negative eligibility. Keep format-invalid addresses and the historical PostgreSQL lookup uncached. Add opt-in, atomic, distributed HTTP quotas per mapped public, job, import, delivery and suppression endpoint; preserve the existing single-key authorization and worker exemption. DNS falls back to direct bounded lookup on Valkey failure. Privileged HTTP requests fail closed if shared admission is unavailable; public validation uses a bounded per-process fallback, explicitly not a global quota. Use short Redis connection/command timeouts, bounded pool/memory, fixed-cardinality metrics and loopback-only local Compose. Opt-in synthetic benchmarks must not run as part of default tests; they do not prove production resolver capacity.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
 - Deterministic DNS fixtures and local protocol fakes; no live SMTP probes or personal email accounts in CI. Keep any SMTP integration disabled without explicit operator policy.
-- Testcontainers with PostgreSQL for Flyway, repository queries, concurrent claims, lease recovery, and restart-safe persistence; add Valkey integration coverage for cache TTL and rate limiting once implemented.
+- Testcontainers with PostgreSQL for Flyway, repository queries, concurrent claims, lease recovery, and restart-safe persistence; use disposable Valkey for cache TTL and multi-instance atomic rate limiting.
 - Verify API contract/error paths and UI journeys, then smoke-run API and worker under Compose. Measure concurrency/queue backpressure and inspect OTel/Prometheus signals without logging full addresses.
 - Exercise deterministic 15,000-row imports with malformed/duplicate input, export-order invariants, rejected-row counts, interrupted ingestion, expired leases, stale workers and failed DNS; never use external MX/SMTP hosts. Establish throughput and memory budgets by measurement rather than claiming scale from design alone.
 - Existing tests are the baseline; their audit result will be recorded below. Never mark a phase done solely because code compiles.
@@ -126,6 +128,6 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
 - [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
 - [ ] Phase 2 durable core (Flyway V1–V5 history/jobs/imports/delivery events and fenced workers verified locally; production owner scoping, retention, backup/restore policy and DNS capacity remain open; MySQL import waived).
-- [ ] Phase 3 bounded intelligence (Phase 8 CSV and Phase 9 authorized historical delivery/suppression slice verified locally; Valkey, tenant controls, approved retention, production capacity and full phase exit remain open).
+- [ ] Phase 3 bounded intelligence (Phase 8 CSV and Phase 9 delivery/suppression verified locally; Phase 10 Valkey cache/limiter in isolated uncommitted review, while tenant controls, approved retention, production capacity and full phase exit remain open).
 - [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
 - [ ] Phase 5 local product (not started).
