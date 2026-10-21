@@ -98,6 +98,98 @@ class DnsObservationCacheTest {
                 org.mockito.ArgumentMatchers.<Duration>argThat(ttl -> ttl.toMillis() > 0 && ttl.toMillis() <= 5000));
     }
 
+    @Test
+    void soaProofControlsNegativeCaching() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        DnsLookupService unproved = service(query -> {
+            calls.incrementAndGet();
+            return answer(query, Rcode.NXDOMAIN, false);
+        }, true, 8192, 2, 100);
+        unproved.lookup("fixture.test");
+        unproved.lookup("fixture.test");
+        assertEquals(2, calls.get());
+        verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
+    }
+
+    @Test
+    void soaNegativeTtlIsMinimumOfRecordAndSoaMinimum() throws Exception {
+        DnsLookupService service = service(query -> {
+            Message response = answer(query, Rcode.NXDOMAIN, false);
+            response.addRecord(new SOARecord(Name.fromString("test."), DClass.IN, 3,
+                    Name.fromString("ns.test."), Name.fromString("hostmaster.test."),
+                    1, 2, 3, 4, 2), Section.AUTHORITY);
+            return response;
+        }, true, 8192, 2, 100);
+        assertEquals(Reason.DOMAIN_NOT_FOUND, service.lookup("fixture.test").reason());
+        verify(values).set(any(String.class), any(String.class),
+                org.mockito.ArgumentMatchers.<Duration>argThat(ttl -> ttl.toMillis() > 0 && ttl.toMillis() <= 2000));
+    }
+
+    @Test
+    void mxAndAddressTtlMinimumWins() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        DnsLookupService service = service(query -> {
+            calls.incrementAndGet();
+            Message reply = answer(query, Rcode.NOERROR, false);
+            if (query.getQuestion().getType() == Type.MX) {
+                reply.addRecord(new MXRecord(query.getQuestion().getName(), DClass.IN, 19, 10,
+                        Name.fromString("mail.fixture.test.")), Section.ANSWER);
+            } else if (query.getQuestion().getType() == Type.A) {
+                reply.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 7,
+                        InetAddress.getByName("192.0.2.1")), Section.ANSWER);
+            }
+            return reply;
+        }, true, 8192, 2, 100);
+        assertEquals(Reason.MX_PRESENT, service.lookup("fixture.test").reason());
+        verify(values).set(any(String.class), any(String.class),
+                org.mockito.ArgumentMatchers.<Duration>argThat(ttl -> ttl.toMillis() > 0 && ttl.toMillis() <= 7000));
+        assertEquals(2, calls.get());
+    }
+
+    @Test
+    void implicitAddressRouteRequiresProvedMxAbsence() throws Exception {
+        DnsLookupService unproved = service(query -> {
+            Message response = answer(query, Rcode.NOERROR, false);
+            if (query.getQuestion().getType() == Type.A) {
+                response.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 60,
+                        InetAddress.getByName("192.0.2.5")), Section.ANSWER);
+            }
+            return response;
+        }, true, 8192, 2, 100);
+        assertEquals(Reason.IMPLICIT_MX, unproved.lookup("fixture.test").reason());
+        verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
+
+        DnsLookupService proved = service(query -> {
+            int type = query.getQuestion().getType();
+            Message response = answer(query, Rcode.NOERROR, type == Type.MX);
+            if (type == Type.A) {
+                response.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 60,
+                        InetAddress.getByName("192.0.2.5")), Section.ANSWER);
+            }
+            return response;
+        }, true, 8192, 2, 100);
+        assertEquals(Reason.IMPLICIT_MX, proved.lookup("fixture.test").reason());
+        verify(values).set(any(String.class), any(String.class),
+                org.mockito.ArgumentMatchers.<Duration>argThat(ttl -> ttl.toMillis() > 0 && ttl.toMillis() <= 9000));
+    }
+
+    @Test
+    void zeroTtlNeverCaches() throws Exception {
+        DnsLookupService zero = service(query -> {
+            Message response = answer(query, Rcode.NOERROR, false);
+            if (query.getQuestion().getType() == Type.MX) {
+                response.addRecord(new MXRecord(query.getQuestion().getName(), DClass.IN, 0, 10,
+                        Name.fromString("mail.fixture.test.")), Section.ANSWER);
+            } else if (query.getQuestion().getType() == Type.A) {
+                response.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 60,
+                        InetAddress.getByName("192.0.2.1")), Section.ANSWER);
+            }
+            return response;
+        }, true, 8192, 2, 100);
+        assertEquals(Reason.MX_PRESENT, zero.lookup("fixture.test").reason());
+        verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
+    }
+
     private DnsLookupService service(Answer answer, boolean enabled, int maxBytes, int inflight, int waitMillis)
             throws Exception {
         Resolver resolver = mock(Resolver.class);
