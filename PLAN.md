@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #10 merged Phase 9 into fetched `origin/main` at `6467083aafc96ada1ee08ab43db78cc80f75e119`. Phase 10 is being prepared without commits in isolated `feature/valkey-cache-rate-limiting`; this is not a deployment or independent review verdict. PostgreSQL/Flyway V1–V5 remain authoritative for history, jobs, imports and delivery evidence. Valkey is limited to disposable DNS observations and HTTP admission state; UI, tenant authorization, approved retention/deletion, production egress and the complete local product remain open. The owner's two irrelevant MySQL rows remain excluded.
+Status: PR #11 merged Phase 10 into fetched `origin/main` at `5cd35c1b0a5c84de6fc5d6e1691c62014c6dda10`. Phase 11 is an isolated, uncommitted React client on `feature/react-dashboard`; independent audit and production approval remain open. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Owner-scoped access, approved retention/deletion, production TLS and egress, observability, and the complete local product remain open. The owner's two irrelevant MySQL rows remain excluded.
 
 ## Goals and current scope
 
@@ -92,6 +92,10 @@ Phase 7 audit remediation: cancellation reports HTTP 200 only when it made an ac
 
 Phase 10 local scope (D-035–D-036): Add opt-in Valkey caching with a bounded DNS TTL and strict positive/negative eligibility. Keep format-invalid addresses and the historical PostgreSQL lookup uncached. Add opt-in, atomic, distributed HTTP quotas per mapped public, job, import, delivery and suppression endpoint; preserve the existing single-key authorization and worker exemption. DNS falls back to direct bounded lookup on Valkey failure. Privileged HTTP requests fail closed if shared admission is unavailable; public validation uses a bounded per-process fallback, explicitly not a global quota. Use short Redis connection/command timeouts, bounded pool/memory, fixed-cardinality metrics and loopback-only local Compose. Opt-in synthetic benchmarks must not run as part of default tests; they do not prove production resolver capacity.
 
+Phase 11 client scope (D-037): Build a separately runnable React/TypeScript/Vite SPA against the existing API with responsive keyboard-accessible navigation, explicit health and session-only activity, a conservative individual result, bounded import upload/progress/ordered rows/export, known-ID jobs, exact-address evidence, auditable suppressions and in-memory administrative key. Validate response shapes and show sanitized failures; pause or stop polling on hidden/terminal/unavailable paths. Route locally through the Vite same-origin proxy, never a wildcard credential CORS allowance. Browser tests exercise a packaged API and separate headless worker with disposable PostgreSQL/Valkey in local and CI verification. The backend has no global jobs/imports/events list or history read, so the client must not invent those workflows. No backend schema/endpoint change is authorized; Phase 5 full local product still needs deployed UI topology, deployment checks and monitoring, and production use still needs per-user authorization, retention and TLS.
+
+Phase 11 first-audit remediation (D-037): Align the browser import schema with the V3 database constraint and the `READY` to `PROCESSING` worker transition; poll all three nonterminal states without treating `PROCESSING` as an unexpected response. Keep theme switches usable if browser storage throws or is unavailable. Bound separate session-only job and import ID lists at 50 newest-first distinct entries; preserve the existing ten-validation limit and disconnect cleanup. Prove these behaviors with representative parsed HTTP responses and component/session tests; no backend state machine or migration change.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
@@ -128,6 +132,6 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
 - [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
 - [ ] Phase 2 durable core (Flyway V1–V5 history/jobs/imports/delivery events and fenced workers verified locally; production owner scoping, retention, backup/restore policy and DNS capacity remain open; MySQL import waived).
-- [ ] Phase 3 bounded intelligence (Phase 8 CSV and Phase 9 delivery/suppression verified locally; Phase 10 Valkey cache/limiter in isolated uncommitted review, while tenant controls, approved retention, production capacity and full phase exit remain open).
+- [ ] Phase 3 bounded intelligence (Phase 8 CSV, Phase 9 delivery/suppression and Phase 10 Valkey cache/limiter merged and verified locally; tenant controls, approved retention, production capacity and full phase exit remain open).
 - [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
-- [ ] Phase 5 local product (not started).
+- [ ] Phase 5 local product (Phase 11 delivers a local dashboard slice; deployment topology, observability and production identity/retention remain open).
