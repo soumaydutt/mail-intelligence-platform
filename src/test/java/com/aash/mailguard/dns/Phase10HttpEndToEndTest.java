@@ -209,6 +209,49 @@ class Phase10HttpEndToEndTest {
         }
     }
 
+    @Test
+    void twoApiInstancesShareTheSamePublicTokenBucket() throws Exception {
+        String[] settings = {
+                "--server.port=0", "--spring.datasource.url=" + postgres.getJdbcUrl(),
+                "--spring.datasource.username=" + postgres.getUsername(),
+                "--spring.datasource.password=" + postgres.getPassword(),
+                "--spring.data.redis.host=" + valkey.getHost(),
+                "--spring.data.redis.port=" + valkey.getMappedPort(6379),
+                "--valkey.namespace=shared-rate-" + UUID.randomUUID().toString().substring(0, 8),
+                "--dns.cache.enabled=false", "--rate-limit.enabled=true",
+                "--rate-limit.identity-secret=synthetic-phase10-secret-has-32-characters",
+                "--rate-limit.test-capacity=1", "--rate-limit.public-capacity=2",
+                "--rate-limit.public-global-capacity=2",
+                "--jobs.api-key=" + KEY, "--jobs.worker.enabled=false"
+        };
+        try (HttpClient http = HttpClient.newHttpClient();
+                ConfigurableApplicationContext first = new SpringApplicationBuilder(MailGuardApplication.class)
+                        .web(WebApplicationType.SERVLET).run(settings);
+                ConfigurableApplicationContext second = new SpringApplicationBuilder(MailGuardApplication.class)
+                        .web(WebApplicationType.SERVLET).run(settings)) {
+            int firstPort = first.getEnvironment().getProperty("local.server.port", Integer.class);
+            int secondPort = second.getEnvironment().getProperty("local.server.port", Integer.class);
+            URI firstBase = URI.create("http://127.0.0.1:" + firstPort);
+            URI secondBase = URI.create("http://127.0.0.1:" + secondPort);
+            HttpResponse<String> options = send(http, firstBase, "OPTIONS", "/api/email/test", null, null);
+            assertEquals(200, options.statusCode(), options.body());
+            assertEquals("POST,OPTIONS", options.headers().firstValue("Allow").orElseThrow());
+            assertEquals(200, send(http, firstBase, "POST", "/api/email/test", null, null).statusCode());
+            HttpResponse<String> denied = send(http, secondBase, "POST", "/api/email/test", null, null);
+            assertEquals(429, denied.statusCode(), denied.body());
+            long retry = Long.parseLong(denied.headers().firstValue("Retry-After").orElseThrow());
+            assertTrue(retry > 0 && retry <= 60);
+            assertEquals("/api/email/test", json.readTree(denied.body()).get("path").asText());
+            HttpResponse<String> otherPolicy = send(http, secondBase, "POST", "/api/email/validate",
+                    "{\"email\":\"invalid-syntax\"}", null);
+            assertEquals(200, otherPolicy.statusCode(), otherPolicy.body());
+            assertEquals("1", otherPolicy.headers().firstValue("RateLimit-Remaining").orElseThrow());
+            HttpResponse<String> globalDenied = send(http, firstBase, "POST", "/api/email/validate",
+                    "{\"email\":\"invalid-syntax\"}", null);
+            assertEquals(429, globalDenied.statusCode(), globalDenied.body());
+        }
+    }
+
     private static JsonNode await(HttpClient http, URI base, String path, String field, String target)
             throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(25).toNanos();
