@@ -190,6 +190,78 @@ class DnsObservationCacheTest {
         verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
     }
 
+    @Test
+    void oversizedObservationIsNotWritten() throws Exception {
+        String domain = "a".repeat(50) + "." + "b".repeat(50) + ".test";
+        DnsLookupService service = service(query -> {
+            Message response = answer(query, Rcode.NOERROR, false);
+            if (query.getQuestion().getType() == Type.A) {
+                response.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 60,
+                        InetAddress.getByName("192.0.2.5")), Section.ANSWER);
+            }
+            return response;
+        }, true, 128, 2, 100);
+        assertEquals(Reason.IMPLICIT_MX, service.lookup(domain).reason());
+        verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
+    }
+
+    @Test
+    void transientFailuresAreNeverCachedAndRedisOutageFailsOpenThenRecovers() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        DnsLookupService service = service(query -> {
+            int index = calls.incrementAndGet();
+            if (index == 1) throw new InterruptedIOException("timeout");
+            return answer(query, index == 2 ? Rcode.SERVFAIL : Rcode.NXDOMAIN, true);
+        }, true, 8192, 2, 100);
+        when(values.get(any(String.class), anyLong(), anyLong())).thenThrow(new IllegalStateException("outage"))
+                .thenReturn(null);
+        assertEquals(Reason.DNS_TEMPORARY_FAILURE, service.lookup("fixture.test").reason());
+        assertEquals(Reason.DNS_TEMPORARY_FAILURE, service.lookup("fixture.test").reason());
+        assertEquals(Reason.DOMAIN_NOT_FOUND, service.lookup("fixture.test").reason());
+        assertEquals(3, calls.get());
+        verify(values).set(any(String.class), any(String.class),
+                org.mockito.ArgumentMatchers.<Duration>argThat(ttl -> ttl.toMillis() > 0 && ttl.toMillis() <= 5000));
+    }
+
+    @Test
+    void cacheReadTimeoutFallsBackToFreshDnsAndNextRequestRecovers() throws Exception {
+        AtomicInteger queries = new AtomicInteger();
+        DnsLookupService service = service(query -> {
+            queries.incrementAndGet();
+            return answer(query, Rcode.NXDOMAIN, true);
+        }, true, 8192, 2, 100);
+        when(values.get(any(String.class), anyLong(), anyLong()))
+                .thenThrow(new QueryTimeoutException("fixture read timeout")).thenReturn(null);
+        assertEquals(Reason.DOMAIN_NOT_FOUND, service.lookup("fixture.test").reason());
+        verify(values, never()).set(any(String.class), any(String.class), any(Duration.class));
+        assertEquals(Reason.DOMAIN_NOT_FOUND, service.lookup("fixture.test").reason());
+        assertEquals(2, queries.get());
+        verify(values).set(any(String.class), any(String.class), any(Duration.class));
+    }
+
+    @Test
+    void cacheWriteTimeoutPreservesDnsEvidenceAndLaterWriteRecovers() throws Exception {
+        AtomicInteger queries = new AtomicInteger();
+        DnsLookupService service = service(query -> {
+            queries.incrementAndGet();
+            Message response = answer(query, Rcode.NOERROR, false);
+            if (query.getQuestion().getType() == Type.MX) {
+                response.addRecord(new MXRecord(query.getQuestion().getName(), DClass.IN, 60, 10,
+                        Name.fromString("mail.fixture.test.")), Section.ANSWER);
+            } else if (query.getQuestion().getType() == Type.A) {
+                response.addRecord(new ARecord(query.getQuestion().getName(), DClass.IN, 60,
+                        InetAddress.getByName("192.0.2.5")), Section.ANSWER);
+            }
+            return response;
+        }, true, 8192, 2, 100);
+        org.mockito.Mockito.doThrow(new QueryTimeoutException("fixture write timeout")).doNothing()
+                .when(values).set(any(String.class), any(String.class), any(Duration.class));
+        assertEquals(Reason.MX_PRESENT, service.lookup("fixture.test").reason());
+        assertEquals(Reason.MX_PRESENT, service.lookup("fixture.test").reason());
+        assertEquals(4, queries.get());
+        verify(values, org.mockito.Mockito.times(2)).set(any(String.class), any(String.class), any(Duration.class));
+    }
+
     private DnsLookupService service(Answer answer, boolean enabled, int maxBytes, int inflight, int waitMillis)
             throws Exception {
         Resolver resolver = mock(Resolver.class);
