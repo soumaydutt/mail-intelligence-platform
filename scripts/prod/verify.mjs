@@ -2,7 +2,7 @@
 // Owns only a fresh random Compose project and its disposable recovery container.
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -14,13 +14,20 @@ import { assertMatchingIntegrity, rowDigests, schemaIntegrity, tableCounts } fro
 const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const project = `mailguard-p12-smoke-${randomBytes(4).toString('hex')}`;
 const dir = mkdtempSync(join(tmpdir(), `${project}-`));
+try { chmodSync(dir, 0o755); } catch {}
 const password = randomBytes(48).toString('base64url');
 const apiKey = randomBytes(48).toString('base64url');
 const secret = randomBytes(48).toString('base64url');
 const identity = randomBytes(48).toString('base64url');
 const values = { db_password: password, jobs_api_key: apiKey, valkey_password: secret, rate_limit_identity_secret: identity };
-for (const [name, value] of Object.entries(values)) writeFileSync(join(dir, name), value, { mode: 0o600 });
-writeFileSync(join(dir, 'valkey.acl'), `user default on >${secret} ~* &* +@all\n`, { mode: 0o600 });
+for (const [name, value] of Object.entries(values)) {
+  const file = join(dir, name);
+  writeFileSync(file, value, { mode: 0o644 });
+  try { chmodSync(file, 0o644); } catch {}
+}
+const aclFile = join(dir, 'valkey.acl');
+writeFileSync(aclFile, `user default on >${secret} ~* &* +@all\n`, { mode: 0o644 });
+try { chmodSync(aclFile, 0o644); } catch {}
 const cert = join(dir, 'localhost.crt');
 const key = join(dir, 'localhost.key');
 const envFile = join(dir, '.env');
@@ -39,7 +46,7 @@ function run(binary, args, { cwd = root, env = process.env, timeout = 900000, di
   }
   return result.stdout;
 }
-function compose(...args) { return run('docker', [...baseArgs, ...args]); }
+function compose(...args) { return run('docker', [...baseArgs, ...args], { diagnostics: true }); }
 function port() {
   return new Promise((resolvePort, reject) => {
     const server = createServer();
@@ -154,6 +161,7 @@ async function main() {
     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1', '-keyout', key, '-out', cert],
   { stdio: 'ignore', timeout: 30000 });
   if (certResult.status !== 0) throw Error('Local OpenSSL certificate generation failed');
+  try { chmodSync(cert, 0o644); chmodSync(key, 0o644); } catch {}
   const settings = {
     BIND_ADDRESS: '127.0.0.1', PUBLIC_HOST: 'localhost', HTTP_PORT: http, HTTPS_PORT: https,
     DB_NAME: 'mailguard', DB_USERNAME: 'mailguard', DELIVERY_SOURCE_ID: 'disposable-smoke',
@@ -161,11 +169,12 @@ async function main() {
     VALKEY_PASSWORD_FILE: join(dir, 'valkey_password'), RATE_LIMIT_IDENTITY_SECRET_FILE: join(dir, 'rate_limit_identity_secret'),
     VALKEY_ACL_FILE: join(dir, 'valkey.acl'), TLS_CERT_FILE: cert, TLS_KEY_FILE: key,
   };
-  writeFileSync(envFile, Object.entries(settings).map(([name, value]) => `${name}=${String(value).replaceAll('\\', '/')}`).join('\n') + '\n', { mode: 0o600 });
+  writeFileSync(envFile, Object.entries(settings).map(([name, value]) => `${name}=${String(value).replaceAll('\\', '/')}`).join('\n') + '\n', { mode: 0o644 });
+  try { chmodSync(envFile, 0o644); } catch {}
   console.log(`Disposable Compose project ${project}; private artifacts ${dir}`);
   compose('config', '--quiet');
   started = true;
-  compose('up', '--build', '-d', '--wait', '--wait-timeout', '180');
+  compose('up', '--build', '-d', '--wait', '--wait-timeout', '360');
   const url = `https://localhost:${https}`;
   expectStatus(await send(`${url}/`), 200);
   const redirect = await send(`http://localhost:${http}/validate`, 'GET', null, null, false);
@@ -222,7 +231,12 @@ finally {
     catch { console.error(`Inspect test-owned recovery container ${target}`); }
   }
   if (started) {
-    try { compose('down', '--remove-orphans'); }
+    try {
+      if (process.exitCode && process.exitCode !== 0) {
+        console.error(compose('logs', '--tail=50'));
+      }
+      compose('down', '--remove-orphans');
+    }
     catch { console.error(`Inspect test-owned Compose project ${project}`); }
   }
   console.log(`Test-owned artifacts, if created, remain for inspection: ${dir}, ${project}_postgres_data`);
