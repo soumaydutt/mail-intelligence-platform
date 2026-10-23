@@ -11,6 +11,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,12 +35,16 @@ public class JobWorker {
     private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(
             runnable -> Thread.ofPlatform().name("mailguard-job-heartbeat").daemon(true).unstarted(runnable));
     private final Map<UUID, Active> active = new ConcurrentHashMap<>();
+    private final WorkerHealthProbe health;
     private final String owner = UUID.randomUUID().toString();
     private final LongAdder claimed = new LongAdder();
     private final LongAdder completed = new LongAdder();
     private final LongAdder retried = new LongAdder();
     private final LongAdder failed = new LongAdder();
     private final LongAdder stale = new LongAdder();
+    private final AtomicLong lastPollSuccessEpochSeconds = new AtomicLong();
+    private volatile boolean renewalFailed;
+    private boolean pollFailed;
     private volatile boolean running;
     private Thread dispatcher;
 
@@ -58,6 +63,7 @@ public class JobWorker {
         this.lease = Duration.ofSeconds(leaseSeconds);
         this.pollMillis = pollMillis;
         this.shutdownSeconds = shutdownSeconds;
+        this.health = new WorkerHealthProbe("job-worker", pollMillis);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -80,8 +86,15 @@ public class JobWorker {
                         claimed.increment();
                         tasks.execute(() -> process(work));
                     }
+                    lastPollSuccessEpochSeconds.set(java.time.Instant.now().getEpochSecond());
+                    pollFailed = false;
+                }
+                if (!pollFailed && !renewalFailed) {
+                    health.succeeded();
                 }
             } catch (RuntimeException e) {
+                health.failed();
+                pollFailed = true;
                 // Database outages leave claims to expire and be reclaimed by a healthy worker.
                 log.warn("Job claim unavailable; retrying without exposing request data");
             }
@@ -153,20 +166,26 @@ public class JobWorker {
                     work.thread.interrupt();
                 }
             } catch (RuntimeException e) {
+                renewalFailed = true;
+                health.failed();
                 log.warn("Job heartbeat unavailable; leases remain authoritative");
-                break;
+                return;
             }
         }
+        renewalFailed = false;
     }
 
     private void report() {
-        log.info("Job worker counters claimed={} completed={} retried={} failed={} stale={} active={}",
-                claimed.sum(), completed.sum(), retried.sum(), failed.sum(), stale.sum(), active.size());
+        log.info("Job worker counters claimed={} completed={} retried={} failed={} stale={} active={} "
+                        + "running={} last_poll_success_epoch_seconds={}",
+                claimed.sum(), completed.sum(), retried.sum(), failed.sum(), stale.sum(), active.size(),
+                running, lastPollSuccessEpochSeconds.get());
     }
 
     @PreDestroy
     public void stop() {
         running = false;
+        health.close();
         if (dispatcher != null) {
             dispatcher.interrupt();
         }

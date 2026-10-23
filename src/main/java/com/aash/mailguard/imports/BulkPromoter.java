@@ -1,8 +1,11 @@
 package com.aash.mailguard.imports;
 
+import com.aash.mailguard.jobs.WorkerHealthProbe;
+
 import jakarta.annotation.PreDestroy;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +23,8 @@ public class BulkPromoter {
     private final long pollMillis;
     private final LongAdder promoted = new LongAdder();
     private final LongAdder errors = new LongAdder();
+    private final AtomicLong lastPollSuccessEpochSeconds = new AtomicLong();
+    private final WorkerHealthProbe health;
     private volatile boolean running;
     private Thread dispatcher;
 
@@ -32,6 +37,7 @@ public class BulkPromoter {
         this.store = store;
         this.batchSize = batchSize;
         this.pollMillis = pollMillis;
+        this.health = new WorkerHealthProbe("import-promoter", pollMillis);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -45,7 +51,10 @@ public class BulkPromoter {
         while (running) {
             try {
                 promoted.add(store.promote(batchSize));
+                lastPollSuccessEpochSeconds.set(java.time.Instant.now().getEpochSecond());
+                health.succeeded();
             } catch (RuntimeException e) {
+                health.failed();
                 errors.increment();
                 log.warn("Import promotion unavailable; retrying without request data");
             }
@@ -64,12 +73,13 @@ public class BulkPromoter {
     private void report() {
         try {
             BulkImportStore.RecentMetrics recent = store.recentMetrics();
-            log.info("Import worker promoted={} errors={} last_minute_created={} last_minute_completed={} "
-                    + "last_minute_failed={} last_minute_rows_completed={} last_minute_rows_failed={} "
+            log.info("Import worker promoted={} errors={} last_poll_success_epoch_seconds={} running={} "
+                    + "last_minute_created={} last_minute_completed={} last_minute_failed={} "
+                    + "last_minute_rows_completed={} last_minute_rows_failed={} "
                     + "last_minute_rows_cancelled={} last_minute_promotion_lag_ms={}",
-                    promoted.sum(), errors.sum(), recent.importsCreated(), recent.importsCompleted(),
-                    recent.importsFailed(), recent.rowsCompleted(), recent.rowsFailed(),
-                    recent.rowsCancelled(), recent.promotionLagMillis());
+                    promoted.sum(), errors.sum(), lastPollSuccessEpochSeconds.get(), running,
+                    recent.importsCreated(), recent.importsCompleted(), recent.importsFailed(),
+                    recent.rowsCompleted(), recent.rowsFailed(), recent.rowsCancelled(), recent.promotionLagMillis());
         } catch (RuntimeException e) {
             log.warn("Import metrics unavailable; continuing without request data");
         }
@@ -78,6 +88,7 @@ public class BulkPromoter {
     @PreDestroy
     public void stop() {
         running = false;
+        health.close();
         if (dispatcher != null) {
             dispatcher.interrupt();
             try {
