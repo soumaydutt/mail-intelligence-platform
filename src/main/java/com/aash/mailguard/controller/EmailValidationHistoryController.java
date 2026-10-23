@@ -23,11 +23,14 @@ public class EmailValidationHistoryController {
 
     private final EmailValidationHistoryService service;
     private final byte[] apiKey;
+    private final boolean requireApiKey;
 
     public EmailValidationHistoryController(EmailValidationHistoryService service,
-            @Value("${jobs.api-key:}") String apiKey) {
+            @Value("${jobs.api-key:}") String apiKey,
+            @Value("${validation.require-api-key:false}") boolean requireApiKey) {
         this.service = service;
         this.apiKey = apiKey.getBytes(StandardCharsets.UTF_8);
+        this.requireApiKey = requireApiKey;
     }
 
     @PostMapping("/test")
@@ -39,7 +42,7 @@ public class EmailValidationHistoryController {
     public ResponseEntity<EmailValidationResponse> validate(
             @Valid @RequestBody EmailValidationRequest request,
             @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) {
-        if (suppliedKey != null && (apiKey.length == 0 || !MessageDigest.isEqual(
+        if ((requireApiKey || suppliedKey != null) && (suppliedKey == null || apiKey.length == 0 || !MessageDigest.isEqual(
                 apiKey, suppliedKey.getBytes(StandardCharsets.UTF_8)))) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
