@@ -1,0 +1,47 @@
+{
+    auto_https off
+    admin off
+    persist_config off
+}
+
+http://:8080 {
+    redir https://{$PUBLIC_HOST}:{$HTTPS_PORT}{uri} permanent
+}
+
+https://:8443 {
+    tls /run/secrets/TLS_CERT /run/secrets/TLS_KEY
+    encode zstd gzip
+    request_body {
+        max_size 17MiB
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'"
+        Cache-Control "no-store"
+    }
+
+    @api path /api /api/*
+    handle @api {
+        reverse_proxy api:8080 {
+            header_up -Forwarded
+            header_up -X-Forwarded-For
+            header_up -X-Real-IP
+            header_up -X-Forwarded-Host
+            header_up -X-Forwarded-Proto
+        }
+    }
+    handle /actuator/health {
+        reverse_proxy api:8081
+    }
+    handle /actuator* {
+        respond 404
+    }
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}
