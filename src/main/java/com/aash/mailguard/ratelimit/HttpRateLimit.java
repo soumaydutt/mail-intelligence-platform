@@ -38,17 +38,20 @@ public class HttpRateLimit implements HandlerInterceptor, WebMvcConfigurer {
     private final ObjectMapper json;
     private final byte[] apiKey;
     private final SecretKeySpec hmacKey;
+    private final boolean requireValidationKey;
     // shortcut: per-instance outage budget, replace only if public outage admission needs a cluster-wide guarantee.
     private long fallbackStarted;
     private int fallbackUsed;
 
     public HttpRateLimit(RateLimitSettings settings, RedisTokenBucket bucket, MeterRegistry metrics,
-            ObjectMapper json, @Value("${jobs.api-key:}") String apiKey) {
+            ObjectMapper json, @Value("${jobs.api-key:}") String apiKey,
+            @Value("${validation.require-api-key:false}") boolean requireValidationKey) {
         this.settings = settings;
         this.bucket = bucket;
         this.metrics = metrics;
         this.json = json;
         this.apiKey = apiKey.getBytes(StandardCharsets.UTF_8);
+        this.requireValidationKey = requireValidationKey;
         if (settings.enabled() && (this.apiKey.length == 0 || this.apiKey.length > 256)) {
             throw new IllegalArgumentException("Enabled HTTP rate limiting requires a bounded administrative API key");
         }
@@ -78,9 +81,22 @@ public class HttpRateLimit implements HandlerInterceptor, WebMvcConfigurer {
             reject(request, response, 503, "Rate limiting unavailable", 1);
             return false; // Newly mapped /api handlers cannot silently bypass admission.
         }
-        boolean publicRoute = policy == Policy.PUBLIC || policy == Policy.TEST;
+        boolean publicRoute = policy == Policy.TEST || policy == Policy.PUBLIC && !requireValidationKey;
         String supplied = request.getHeader("X-Job-API-Key");
         if ((!publicRoute || policy == Policy.PUBLIC && supplied != null) && !authenticated(supplied)) {
+            try {
+                Result attempt = take(Policy.PUBLIC, peer(request.getRemoteAddr()));
+                if (!attempt.allowed()) {
+                    count(policy, "rejected");
+                    headers(response, settings.capacity(Policy.PUBLIC), attempt);
+                    reject(request, response, 429, "Rate limit reached", attempt.delaySeconds());
+                    return false;
+                }
+            } catch (org.springframework.dao.DataAccessException | IllegalStateException unavailable) {
+                count(policy, "backend_error");
+                reject(request, response, 503, "Rate limiting unavailable", 0);
+                return false;
+            }
             count(policy, "unauthorized");
             reject(request, response, 401, "Unauthorized", 0);
             return false;
