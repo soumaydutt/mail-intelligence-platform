@@ -5,6 +5,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -40,3 +41,62 @@ jobs:
         working-directory: frontend
       - run: npm run test:e2e
         working-directory: frontend
+
+  production-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+      - run: node --test scripts/backup/backup.test.mjs
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        id: filesystem_scan
+        continue-on-error: true
+        with:
+          version: v0.76.1
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          skip-dirs: frontend/node_modules,target,frontend/dist
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: node scripts/prod/verify.mjs
+        if: github.event_name != 'workflow_dispatch'
+      - run: node scripts/prod/verify.mjs --load
+        if: github.event_name == 'workflow_dispatch'
+      - run: docker build -t mailguard-api:ci .
+      - run: docker build -f frontend/Dockerfile -t mailguard-proxy:ci .
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        id: api_image_scan
+        continue-on-error: true
+        with:
+          image-ref: mailguard-api:ci
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          skip-setup-trivy: true
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        id: proxy_image_scan
+        continue-on-error: true
+        with:
+          image-ref: mailguard-proxy:ci
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          skip-setup-trivy: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disposable-production-browser
+          path: frontend/test-results/
+          if-no-files-found: ignore
+      - name: Require clean security scans
+        run: test "${{ steps.filesystem_scan.outcome }}" = success && test "${{ steps.api_image_scan.outcome }}" = success && test "${{ steps.proxy_image_scan.outcome }}" = success
