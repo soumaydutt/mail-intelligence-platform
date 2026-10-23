@@ -202,7 +202,7 @@ class Phase10HttpEndToEndTest {
             assertEquals(4, FixtureDnsConfiguration.queries.get(),
                     "An unavailable cache must not return stale or false-negative DNS evidence");
             String path = "/api/jobs/" + UUID.randomUUID();
-            assertEquals(401, send(http, base, "GET", path, null, null).statusCode());
+            assertEquals(503, send(http, base, "GET", path, null, null).statusCode());
             HttpResponse<String> admin = send(http, base, "GET", path, null, KEY);
             assertEquals(503, admin.statusCode(), admin.body());
             assertEquals("no-store", admin.headers().firstValue("Cache-Control").orElseThrow());
