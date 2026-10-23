@@ -36,7 +36,7 @@ class HttpRateLimitTest {
     private static final String KEY = "synthetic-api-key";
     private final RedisTokenBucket redis = mock(RedisTokenBucket.class);
     private final HttpRateLimit limiter = new HttpRateLimit(settings(true, 2, 1), redis,
-            new SimpleMeterRegistry(), new ObjectMapper(), KEY);
+            new SimpleMeterRegistry(), new ObjectMapper(), KEY, false);
 
     static RateLimitSettings settings(boolean enabled, int global, int fallback) {
         return new RateLimitSettings(enabled, SECRET, "fixture", 60,
@@ -65,7 +65,7 @@ class HttpRateLimitTest {
 
     @Test
     void automaticOptionsKeepsAllowHeaderWithoutChargingQuota() throws Exception {
-        var controller = new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY);
+        var controller = new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY, false);
         var enabled = MockMvcBuilders.standaloneSetup(controller).addInterceptors(limiter).build();
         var disabled = MockMvcBuilders.standaloneSetup(controller).build();
         disabled.perform(options("/api/email/test")).andExpect(status().isOk())
@@ -82,10 +82,47 @@ class HttpRateLimitTest {
         mvc.perform(get("/api/custom")).andExpect(status().isServiceUnavailable());
         verifyNoInteractions(redis);
 
+        when(redis.take(contains(":public:"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500));
         MockHttpServletResponse admin = new MockHttpServletResponse();
         assertFalse(limiter.preHandle(request("/api/jobs/id", "192.0.2.4", false), admin,
                 handler(JobController.class, "get")));
         assertEquals(401, admin.getStatus());
+    }
+
+    @Test
+    void productionValidationRequiresKeyAndFailedGuessesConsumeSharedQuota() throws Exception {
+        var production = new HttpRateLimit(settings(true, 2, 1), redis,
+                new SimpleMeterRegistry(), new ObjectMapper(), KEY, true);
+        when(redis.take(contains(":public:"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500),
+                        new RedisTokenBucket.Result(false, 0, 1200),
+                        new RedisTokenBucket.Result(true, 1, 500));
+        var route = handler(EmailValidationHistoryController.class, "validate");
+        MockHttpServletResponse missing = new MockHttpServletResponse();
+        assertFalse(production.preHandle(request("/api/email/validate", "192.0.2.4", false), missing, route));
+        assertEquals(401, missing.getStatus());
+        MockHttpServletResponse blocked = new MockHttpServletResponse();
+        assertFalse(production.preHandle(request("/api/email/validate", "192.0.2.4", false), blocked, route));
+        assertEquals(429, blocked.getStatus());
+        assertEquals("2", blocked.getHeader("Retry-After"));
+        assertTrue(production.preHandle(request("/api/email/validate", "192.0.2.4", true),
+                new MockHttpServletResponse(), route));
+        verify(redis, times(3)).take(anyString(), eq(2), eq(60));
+    }
+
+    @Test
+    void productionValidationRejectsAnonymousBeforeWritingHistory() throws Exception {
+        var history = mock(com.aash.mailguard.service.EmailValidationHistoryService.class);
+        var mvc = MockMvcBuilders.standaloneSetup(new EmailValidationHistoryController(history, KEY, true)).build();
+        mvc.perform(post("/api/email/validate").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"person@example.invalid\"}"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(history);
+        mvc.perform(post("/api/email/validate").header("X-Job-API-Key", KEY)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"email\":\"person@example.invalid\"}"))
+                .andExpect(status().isOk());
+        verify(history).validate(any(), eq(true));
     }
 
     @Test
@@ -126,6 +163,8 @@ class HttpRateLimitTest {
 
     @Test
     void unauthorizedUploadCannotContactBackendAndExportFailsClosedOnOutage() throws Exception {
+        when(redis.take(contains(":public:"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500));
         MockHttpServletResponse denied = new MockHttpServletResponse();
         assertFalse(limiter.preHandle(request("/api/imports", "192.0.2.4", false), denied,
                 handler(BulkImportController.class, "create")));
@@ -134,7 +173,7 @@ class HttpRateLimitTest {
         invalidKey.addHeader("X-Job-API-Key", "wrong");
         assertFalse(limiter.preHandle(invalidKey, new MockHttpServletResponse(),
                 handler(EmailValidationHistoryController.class, "validate")));
-        verifyNoInteractions(redis);
+        verify(redis, times(2)).take(contains(":public:"), eq(2), eq(60));
         when(redis.take(anyString(), anyInt(), anyInt()))
                 .thenThrow(new QueryTimeoutException("synthetic timeout"));
         MockHttpServletResponse outage = new MockHttpServletResponse();
@@ -229,7 +268,7 @@ class HttpRateLimitTest {
     @Test
     void rejectsBeforeBodyParsingAndLeavesSuccessfulBodyUntouched() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(
-                new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY))
+                new EmailValidationHistoryController(mock(EmailValidationHistoryService.class), KEY, false))
                 .addInterceptors(limiter).build();
         when(redis.takePublic(anyString(), anyInt(), anyString(), anyInt(), anyInt()))
                 .thenReturn(reply(false, true, 1200));
@@ -277,7 +316,7 @@ class HttpRateLimitTest {
                 1, 100001, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
         var disabled = new HttpRateLimit(new RateLimitSettings(false, "", "local", 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), redis,
-                new SimpleMeterRegistry(), new ObjectMapper(), "");
+                new SimpleMeterRegistry(), new ObjectMapper(), "", false);
         assertDoesNotThrow(() -> assertTrue(disabled.preHandle(
                 request("/api/email/test", "192.0.2.1", false), new MockHttpServletResponse(),
                 handler(EmailValidationHistoryController.class, "test"))));
