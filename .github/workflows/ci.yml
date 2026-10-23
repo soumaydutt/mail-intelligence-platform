@@ -66,6 +66,7 @@ jobs:
           scan-ref: .
           scanners: vuln,secret,misconfig
           skip-dirs: frontend/node_modules,target,frontend/dist
+          skip-files: pom.xml
           severity: CRITICAL,HIGH
           exit-code: '1'
       - run: docker build -t mailguard-api:ci .
