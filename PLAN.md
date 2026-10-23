@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: PR #11 merged Phase 10 into fetched `origin/main` at `5cd35c1b0a5c84de6fc5d6e1691c62014c6dda10`. Phase 11 is an isolated, uncommitted React client on `feature/react-dashboard`; independent audit and production approval remain open. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Owner-scoped access, approved retention/deletion, production TLS and egress, observability, and the complete local product remain open. The owner's two irrelevant MySQL rows remain excluded.
+Status: Phase 12 is an isolated, uncommitted single-host deployment candidate on `feature/production-hardening`, based on merged Phase 11 commit `8ca3bf3290be249ef578ee93326d1724fee0a064`. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Public release remains blocked by owner-scoped identity, approved retention/erasure and legal holds, backup encryption/expiry, DNS egress, production TLS and upstream license rights. The owner's two irrelevant MySQL rows remain excluded.
 
 ## Goals and current scope
 
@@ -96,6 +96,8 @@ Phase 11 client scope (D-037): Build a separately runnable React/TypeScript/Vite
 
 Phase 11 first-audit remediation (D-037): Align the browser import schema with the V3 database constraint and the `READY` to `PROCESSING` worker transition; poll all three nonterminal states without treating `PROCESSING` as an unexpected response. Keep theme switches usable if browser storage throws or is unavailable. Bound separate session-only job and import ID lists at 50 newest-first distinct entries; preserve the existing ten-validation limit and disconnect cleanup. Prove these behaviors with representative parsed HTTP responses and component/session tests; no backend state machine or migration change.
 
+Phase 12 single-host production-hardening candidate (D-038–D-039): build independent `compose.prod.yaml` for loopback-only TLS ingress, non-root private API/headless worker, PostgreSQL authority and authenticated disposable Valkey. Require external secrets, production fail-closed validation/admin credentials, private bounded metrics, separate progress-based worker health, deterministic CI/browser smoke and isolated full-database recovery with schema/content/application-read checks. Keep Flyway V1–V5 unchanged. Five synthetic invalid-address imports at each of 100, 1,000 and 10,000 rows form an optional, rate-paced latency profile; do not claim production throughput from it. Local image scans found zero HIGH/CRITICAL issues after rebuilding patched proxy and API dependencies; hosted CI remains unrun. Public exposure remains blocked by unresolved owner-scoped identity, retention/erasure/legal holds, encryption/backup expiry, upstream license provenance, trusted DNS egress and TLS operator approvals. See [release readiness](docs/RELEASE_READINESS.md) for measured evidence and explicit blocked gates.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
@@ -134,4 +136,4 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [ ] Phase 2 durable core (Flyway V1–V5 history/jobs/imports/delivery events and fenced workers verified locally; production owner scoping, retention, backup/restore policy and DNS capacity remain open; MySQL import waived).
 - [ ] Phase 3 bounded intelligence (Phase 8 CSV, Phase 9 delivery/suppression and Phase 10 Valkey cache/limiter merged and verified locally; tenant controls, approved retention, production capacity and full phase exit remain open).
 - [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
-- [ ] Phase 5 local product (Phase 11 delivers a local dashboard slice; deployment topology, observability and production identity/retention remain open).
+- [ ] Phase 5 local product (Phase 11 dashboard plus Phase 12 loopback deployment, CI candidate, restore drill and telemetry; public release still blocked by ownership, retention, license provenance and operator DNS/TLS/backup policy; patched local image scans do not constitute approval).

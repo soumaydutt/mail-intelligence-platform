@@ -9,6 +9,12 @@ MailGuard exposes a synchronous, passive email check: local format validation fo
 
 This repository preserves the history and attribution of [the original MailGuard](https://github.com/aasheesh06/MailGuard). The implemented API, worker, storage and browser slices are described below; [PLAN.md](PLAN.md) separates them from the larger unimplemented product.
 
+## Single-host production candidate (Phase 12)
+
+`compose.prod.yaml` builds a TLS proxy, private API and headless worker, PostgreSQL 17 and authenticated Valkey 8. It is separate from development `compose.yaml`. Only loopback proxy ports are published by default. An administrator key is mandatory for validation and all private routes in the production profile; no public multi-user or tenant model exists. See [deployment](docs/DEPLOYMENT.md), [operator runbook](docs/OPERATIONS.md), [recovery drill](docs/BACKUP_RESTORE.md), [privacy](docs/PRIVACY.md) and [release gates](docs/RELEASE_READINESS.md) before use.
+
+For an isolated disposable smoke, install Node.js 24, Docker Compose v2 and Chromium (`cd frontend && npm ci && npx playwright install chromium`), then return to the repository root and run `node scripts/prod/verify.mjs`. This creates a unique, local, self-signed TLS stack, exercises browser import/export and proxy abuse limits, stalls and resumes the worker to check Docker health, and verifies a separate restore with schema checks, eight-table content hashes and a read-only packaged-API import read. Its test-owned PostgreSQL volume and private archive remain for inspection; they are **not** production credentials or data. `node scripts/prod/verify.mjs --load` additionally runs five bounded 100-, 1,000- and 10,000-row synthetic invalid-address imports per profile. The archived volume is never removed by the script. Production startup requires operator-supplied certificates, restricted secret files, DNS egress control and the unresolved approvals listed in the release gates.
+
 ---
 ## ✨ Features
 - ✔ Email format validation
@@ -35,7 +41,7 @@ Move into the project directory:
 cd mail-intelligence-platform
 ```
 
-Requires Java 21, Maven, Docker with a running Linux daemon for mandatory PostgreSQL and Valkey integration tests, and a reachable PostgreSQL 17 database for the application. The production configuration requires `DB_URL`, `DB_USERNAME` and `DB_PASSWORD`; it has no implicit database fallback. Keep credentials in the username/password environment variables, not in `DB_URL`, which may appear in startup logs. The HTTP regression suite uses isolated H2 and disables Flyway; Testcontainers cases do not skip when Docker is unavailable. A first disconnected run needs Maven dependencies and `postgres:17-alpine` plus `valkey/valkey:8-alpine` locally cached. Tests need no external DNS or SMTP.
+Local Java startup requires `DB_URL`, `DB_USERNAME` and `DB_PASSWORD`; it has no implicit database fallback. Production Compose supplies credentials from external secret files under `/run/secrets/` instead of putting them in environment values or the image. Keep credentials out of `DB_URL`, which may appear in startup logs. Requires Java 21, Maven, Docker with a running Linux daemon for mandatory PostgreSQL and Valkey integration tests, and a reachable PostgreSQL 17 database. The HTTP regression suite uses isolated H2 and disables Flyway; Testcontainers cases do not skip when Docker is unavailable. A first disconnected run needs Maven dependencies and `postgres:17-alpine` plus `valkey/valkey:8-alpine` locally cached. Tests need no external DNS or SMTP.
 
 On Windows PowerShell, start the **local-only** PostgreSQL and disposable Valkey services with a unique local database password:
 
@@ -66,7 +72,7 @@ Once the application starts successfully, open your browser:
 http://localhost:8080/swagger-ui/index.html
 ```
 
-You can now test all available email validation APIs directly from Swagger UI.
+You can test the local-development email validation APIs directly from Swagger UI. The production profile disables Swagger and OpenAPI and does not publish the API port.
 
 ## PostgreSQL cutover and recovery
 
@@ -76,7 +82,7 @@ On first startup, check Flyway V1–V5, `email_validation_history`, `verificatio
 
 **Never reset a populated PostgreSQL database automatically.** Flyway baseline and clean are disabled; Hibernate uses `ddl-auto=validate`. V1–V4 are immutable. A missing Flyway history entry, incompatible checksum, or incompatible schema must stop startup; investigate and back up instead of dropping tables, baselining, repairing, or replaying applied migrations. PostgreSQL backup and restore, not the unused MySQL database, protect new writes.
 
-History retains full addresses without approved retention or access policy; there is no public history-read endpoint. The in-memory `EvidenceClassifier` still does not persist its DNS/SMTP observations. Phase 9 persists separate, authorized delivery events and suppression audit rows under V5; it does not enable SMTP or the UI. Phase 10 only caches disposable DNS observations; it never caches history or suppressions. See D-032 through D-036.
+History retains full addresses without approved retention or access policy; there is no public history-read endpoint. The in-memory `EvidenceClassifier` still does not persist its DNS/SMTP observations. Phase 9 persists separate, authorized delivery events and suppression audit rows under V5; it does not enable SMTP. Phase 10 only caches disposable DNS observations; it never caches history or suppressions. Phase 11 adds the browser client and Phase 12 provides a loopback-only TLS deployment candidate, not approval for public access. See D-032 through D-039.
 
 ## 📖 Usage
 MailGuard checks local email format, then observes DNS routing for format-valid input. It does not connect to recipient mail servers. Requests within the 255-character storage limit retain history writes. Longer values and malformed JSON return HTTP 400 before DNS or persistence; format-invalid email strings retain HTTP 200 with `status=INVALID`.
@@ -332,9 +338,5 @@ The root Maven project contains the Spring Boot API in `src/main/java/com/aash/m
 - Swagger (OpenAPI)
 - Lombok
 
-## 📄 License
-MIT License
-
-Copyright (c) 2026 Aasheesh Verma
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
+## 📄 License and redistribution
+The upstream [README](https://github.com/aasheesh06/MailGuard) claims MIT and names Copyright (c) 2026 Aasheesh Verma. This derivative preserves that attribution and includes canonical MIT text in [LICENSE](LICENSE), added by the derivative maintainer. Upstream provides no standalone LICENSE or independently confirmed grant; the derivative file does **not** establish upstream permission. Redistribution approval remains blocked pending upstream rights confirmation and a full dependency-license review.
