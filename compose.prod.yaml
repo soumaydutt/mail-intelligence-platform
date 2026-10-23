@@ -1,0 +1,160 @@
+name: mailguard
+x-logging: &service-logging
+  driver: local
+  options: {max-size: "10m", max-file: "3"}
+services:
+  postgres:
+    image: postgres:17-alpine
+    logging: *service-logging
+    environment:
+      POSTGRES_DB: ${DB_NAME:-mailguard}
+      POSTGRES_USER: ${DB_USERNAME:-mailguard}
+      POSTGRES_PASSWORD_FILE: /run/secrets/DB_PASSWORD
+    secrets: [DB_PASSWORD]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits: {cpus: '1.0', memory: 512M}
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--aclfile", "/run/secrets/VALKEY_ACL", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    logging: *service-logging
+    secrets: [VALKEY_ACL, VALKEY_PASSWORD]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/VALKEY_PASSWORD) valkey-cli ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 192M}
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    logging: *service-logging
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-mailguard}
+      DB_USERNAME: ${DB_USERNAME:-mailguard}
+      VALKEY_HOST: valkey
+      RATE_LIMIT_ENABLED: 'true'
+      DNS_CACHE_ENABLED: 'true'
+      JOBS_WORKER_ENABLED: 'false'
+      DELIVERY_SOURCE_ID: ${DELIVERY_SOURCE_ID:-operator}
+    secrets: [DB_PASSWORD, JOBS_API_KEY, VALKEY_PASSWORD, RATE_LIMIT_IDENTITY_SECRET]
+    networks: [backend, ingress, egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+      valkey: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 6
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: '2.0', memory: 768M}
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    logging: *service-logging
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-mailguard}
+      DB_USERNAME: ${DB_USERNAME:-mailguard}
+      VALKEY_HOST: valkey
+      RATE_LIMIT_ENABLED: 'true'
+      DNS_CACHE_ENABLED: 'true'
+      JOBS_WORKER_ENABLED: 'true'
+      DELIVERY_SOURCE_ID: ${DELIVERY_SOURCE_ID:-operator}
+    secrets: [DB_PASSWORD, JOBS_API_KEY, VALKEY_PASSWORD, RATE_LIMIT_IDENTITY_SECRET]
+    networks: [backend, egress]
+    depends_on:
+      api: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "now=$$(date +%s); for marker in /tmp/mailguard-job-worker.ready /tmp/mailguard-import-promoter.ready; do test -f \"$$marker\" && modified=$$(stat -c %Y \"$$marker\") && max_age=$$(cat \"$$marker\") && test \"$$modified\" -le \"$$now\" && test $$((now - modified)) -le \"$$max_age\" || exit 1; done"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: '2.0', memory: 768M}
+
+  proxy:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    logging: *service-logging
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+      HTTPS_PORT: ${HTTPS_PORT:-8443}
+    secrets: [TLS_CERT, TLS_KEY]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-8443}:8443"
+    networks: [ingress, public]
+    depends_on:
+      api: {condition: service_healthy}
+    read_only: true
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=0700
+      - /data:uid=10001,gid=10001,mode=0700
+      - /config:uid=10001,gid=10001,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS --resolve \"$$PUBLIC_HOST:8443:127.0.0.1\" \"https://$$PUBLIC_HOST:8443/\" -o /dev/null"]
+      interval: 5s
+      timeout: 4s
+      start_period: 10s
+      retries: 12
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 128M}
+
+networks:
+  backend: {internal: true}
+  ingress: {internal: true}
+  public: {}
+  egress: {}
+volumes:
+  postgres_data: {}
+secrets:
+  DB_PASSWORD: {file: '${DB_PASSWORD_FILE:?Set DB_PASSWORD_FILE}'}
+  JOBS_API_KEY: {file: '${JOBS_API_KEY_FILE:?Set JOBS_API_KEY_FILE}'}
+  VALKEY_PASSWORD: {file: '${VALKEY_PASSWORD_FILE:?Set VALKEY_PASSWORD_FILE}'}
+  RATE_LIMIT_IDENTITY_SECRET: {file: '${RATE_LIMIT_IDENTITY_SECRET_FILE:?Set RATE_LIMIT_IDENTITY_SECRET_FILE}'}
+  VALKEY_ACL: {file: '${VALKEY_ACL_FILE:?Set VALKEY_ACL_FILE}'}
+  TLS_CERT: {file: '${TLS_CERT_FILE:?Set TLS_CERT_FILE}'}
+  TLS_KEY: {file: '${TLS_KEY_FILE:?Set TLS_KEY_FILE}'}
