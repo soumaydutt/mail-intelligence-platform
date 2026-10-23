@@ -12,7 +12,7 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM alpine:3.24
-RUN apk add --no-cache ca-certificates curl
+RUN apk add --no-cache ca-certificates
 COPY --from=caddy-build /caddy /usr/bin/caddy
 COPY deploy/proxy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/dist /srv
