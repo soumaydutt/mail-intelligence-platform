@@ -68,14 +68,14 @@ jobs:
           skip-dirs: frontend/node_modules,target,frontend/dist
           severity: CRITICAL,HIGH
           exit-code: '1'
+      - run: docker build -t mailguard-api:ci .
+      - run: docker build -f frontend/Dockerfile -t mailguard-proxy:ci .
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
       - run: node scripts/prod/verify.mjs
         if: github.event_name != 'workflow_dispatch'
       - run: node scripts/prod/verify.mjs --load
         if: github.event_name == 'workflow_dispatch'
-      - run: docker build -t mailguard-api:ci .
-      - run: docker build -f frontend/Dockerfile -t mailguard-proxy:ci .
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         id: api_image_scan
         continue-on-error: true
