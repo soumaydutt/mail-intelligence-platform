@@ -86,4 +86,50 @@ class SmtpResponseInterpreterTest {
         assertEquals(4, resp.lines().size());
         assertTrue(resp.isPositiveCompletion());
     }
+
+    @Test
+    void parseRejectsEmptyOrNullLines() {
+        var exNull = assertThrows(IllegalArgumentException.class, () -> SmtpResponse.parse(null));
+        assertEquals("SMTP reply must have a final line", exNull.getMessage());
+
+        var exEmpty = assertThrows(IllegalArgumentException.class, () -> SmtpResponse.parse(List.of()));
+        assertEquals("SMTP reply must have a final line", exEmpty.getMessage());
+    }
+
+    @Test
+    void parseRejectsMultilineStatusMismatch() {
+        List<String> mismatched = List.of(
+                "250-smtp.example.com Hello",
+                "550 Recipient rejected"
+        );
+        var ex = assertThrows(IllegalArgumentException.class, () -> SmtpResponse.parse(mismatched));
+        assertEquals("SMTP multiline status mismatch", ex.getMessage());
+    }
+
+    @Test
+    void classifiesReplyStatusCodeRanges() {
+        SmtpResponse positiveCompletion = new SmtpResponse(250, null, "OK", List.of());
+        assertTrue(positiveCompletion.isPositiveCompletion());
+        assertFalse(positiveCompletion.isPositiveIntermediate());
+        assertFalse(positiveCompletion.isTransientNegative());
+        assertFalse(positiveCompletion.isPermanentNegative());
+
+        SmtpResponse intermediate = new SmtpResponse(354, null, "Start mail input", List.of());
+        assertFalse(intermediate.isPositiveCompletion());
+        assertTrue(intermediate.isPositiveIntermediate());
+        assertFalse(intermediate.isTransientNegative());
+        assertFalse(intermediate.isPermanentNegative());
+
+        SmtpResponse transientNegative = new SmtpResponse(421, "4.4.2", "Timeout", List.of());
+        assertFalse(transientNegative.isPositiveCompletion());
+        assertFalse(transientNegative.isPositiveIntermediate());
+        assertTrue(transientNegative.isTransientNegative());
+        assertFalse(transientNegative.isPermanentNegative());
+
+        SmtpResponse permanentNegative = new SmtpResponse(550, "5.1.1", "User unknown", List.of());
+        assertFalse(permanentNegative.isPositiveCompletion());
+        assertFalse(permanentNegative.isPositiveIntermediate());
+        assertFalse(permanentNegative.isTransientNegative());
+        assertTrue(permanentNegative.isPermanentNegative());
+    }
 }
