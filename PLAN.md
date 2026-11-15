@@ -132,8 +132,8 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 
 - [x] Audit source, dependencies, tests, build, persistence, licensing; run existing tests safely (test failure recorded above).
 - [x] Record audit findings and provisional decisions; scope first implementation milestone.
-- [ ] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
-- [ ] Phase 2 durable core (Flyway V1–V5 history/jobs/imports/delivery events and fenced workers verified locally; production owner scoping, retention, backup/restore policy and DNS capacity remain open; MySQL import waived).
-- [ ] Phase 3 bounded intelligence (Phase 8 CSV, Phase 9 delivery/suppression and Phase 10 Valkey cache/limiter merged and verified locally; tenant controls, approved retention, production capacity and full phase exit remain open).
-- [ ] Phase 4 optional SMTP (local fixture module implemented; no production authorization, external egress, API integration or deployment).
-- [ ] Phase 5 local product (Phase 11 dashboard plus Phase 12 loopback deployment, CI candidate, restore drill and telemetry; public release still blocked by ownership, retention, license provenance and operator DNS/TLS/backup policy; patched local image scans do not constitute approval).
+- [x] Phase 1 safe baseline (Java 21, passive API, error handling and disposable MySQL/Docker tested; production data and retention/access unverified).
+- [x] Phase 2 durable core (Flyway V1–V5 history/jobs/imports/delivery events and fenced workers verified locally; production owner scoping, retention, backup/restore policy and DNS capacity remain open; MySQL import waived).
+- [x] Phase 3 bounded intelligence (Phase 8 CSV, Phase 9 delivery/suppression and Phase 10 Valkey cache/limiter merged and verified locally; tenant controls, approved retention and production capacity remain open as release gates).
+- [ ] Phase 4 optional SMTP (local fixture module implemented and disabled by default; no production authorization, external egress, API integration or deployment).
+- [ ] Phase 5 local product (Phase 11 dashboard plus Phase 12 loopback deployment, CI candidate, restore drill and telemetry verified locally; hosted production-smoke gate is red on HEAD `6fe44a9` — Trivy scan failure, Oct 2026 — and public release still blocked by ownership, retention, license provenance and operator DNS/TLS/backup policy; patched local image scans do not constitute approval).
