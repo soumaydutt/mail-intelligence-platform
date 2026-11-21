@@ -2,6 +2,8 @@
 
 Source: `src/main/java/com/aash/mailguard/{controller,imports,delivery,exception,ratelimit}`. All browser traffic uses the same-origin Vite development proxy or a trusted same-origin production reverse proxy; **never** put the shared administrative key in a URL. A single key grants access to all administrative records, not per-user ownership. No CORS wildcard is added.
 
+**UUID format:** Job/import lookups, direct links, and response identifiers accept exactly 36 characters in case-insensitive hexadecimal `8-4-4-4-12` form. This matches the controllers' canonical-ID boundary without imposing RFC version or variant bits. Lookup fields trim surrounding whitespace; response IDs must already be canonical.
+
 | Method and path | Auth / request | Response and status | Pagination / browser use |
 | --- | --- | --- | --- |
 | `POST /api/email/test` | None; no body | `200` plain text `MailGuard API Working`. | Diagnostic only; default public rate limit. |
