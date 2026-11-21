@@ -224,6 +224,8 @@ Production serving requires a separately approved TLS reverse proxy serving `fro
 
 Dashboard checks from `frontend/`: `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build`; then `npx playwright install chromium`, `mvn -B package` from repo root, and `npm run test:e2e` from `frontend/`. Browser tests start uniquely named disposable PostgreSQL 17 and Valkey 8 containers and the packaged API plus headless worker. They reserve ports `127.0.0.1:18094`, `127.0.0.1:16393` and `127.0.0.1:5173`, create no persistent volumes, and remove only their own containers and child processes. Docker Linux daemon and Java 21 must be available. The tests use synthetic addresses; they never contact SMTP.
 
+The ErrorBoundary reload regression needs only Node.js and Chromium: from `frontend/`, run `npx playwright test --config=playwright.browser.config.ts`. A test-only fixture throws inside a real React child render, checks the sanitized fallback, clicks **Reload dashboard**, and confirms a full-page reload recovers the view. It starts Vite on `127.0.0.1:5187`; it does not start Java, Docker, or a mock API. This proves browser reload behavior, not live-backend availability.
+
 ## 📧 Email Validation
 ### Validate an Email Address
 
