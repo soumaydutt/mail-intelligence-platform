@@ -1,7 +1,7 @@
 FROM golang:1.26.10-alpine@sha256:5cb67f19c5e7994dcb80c074f7cfca8aeeada45bbdca035f73df269cefdcce61 AS caddy-build
 WORKDIR /src
 RUN go mod init mailguard-proxy \
-    && go get github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.7 golang.org/x/net@v0.60.0 \
+    && go get github.com/caddyserver/caddy/v2/cmd/caddy@31f9f0cb99491fdd1a27f82793b78d216c5b2a76 golang.org/x/net@v0.62.0 \
     && CGO_ENABLED=0 go build -trimpath -o /caddy github.com/caddyserver/caddy/v2/cmd/caddy
 
 FROM node:24-alpine AS build
