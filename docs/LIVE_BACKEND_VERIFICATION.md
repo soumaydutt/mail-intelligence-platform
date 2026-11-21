@@ -4,7 +4,7 @@
 
 ## A. Scope and real stack startup
 
-All source work targeted `C:/Users/sbsam/MailGuard-phase12` on its existing `feature/production-hardening` branch. Entry inventory contained 28 modified files and two untracked source files; those existing changes were retained. The original checkout and its six modifications were not accessed or rehashed. No commit, push, PR, merge, public deployment, retained-volume overwrite or database reset was performed.
+All source work targeted `C:/Users/sbsam/MailGuard-phase12` on its existing `feature/production-hardening` branch. Entry inventory contained 28 modified files and two untracked source files; those existing changes were retained. The original checkout and its six modifications were not accessed or rehashed. The live-stack verification preceded separate owner authorization for commits, origin push, main synchronization and a draft PR. That authorization does not permit merging the PR, public deployment, retained-volume overwrite or database reset.
 
 Read `AGENTS.md`, current plan/decisions/progress, Spring properties, `compose.prod.yaml`, `.env.example`, deployment instructions and CI/verifier scripts before startup.
 
@@ -55,17 +55,17 @@ Additional changes in this pass: real PostgreSQL/API/worker restart browser regr
 
 ## D. Reconciled real test results
 
-Generated reports, not historical documentation, establish these final-run counts:
+Generated reports, not historical documentation, establish these final-run counts. Before PR publication, synchronization with `origin/main` at `e2490db` preserved three additional SMTP parser tests. A fresh full `mvn -B verify` passed 350 total / 341 passed / nine skipped; the earlier 347-test snapshot remains historical. Main adds tests and milestone documentation, not new application runtime behavior. Previously exercised browser, image-scan and restore evidence remains unchanged.
 
 | Suite | Total | Passed | Failed/errors | Skipped | Evidence |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Maven backend, 30 Surefire suites | 347 | 338 | 0 | 9 | `target/surefire-reports/TEST-*.xml`; `target/evidence/backend-counts.json` |
+| Maven backend, 30 Surefire suites | 350 | 341 | 0 | 9 | `target/surefire-reports/TEST-*.xml`; `target/evidence/backend-counts.json` |
 | PostgreSQL/Valkey integration subset of backend above | 96 | 96 | 0 | 0 | Store, HTTP, migration/startup and Redis Testcontainers suites; not additional tests |
 | Frontend units, 11 files | 72 | 72 | 0 | 0 | `target/evidence/frontend-unit.xml` |
 | Development real-service Chromium | 9 | 9 | 0 | 0 | `target/evidence/development-browser.xml` |
 | Production HTTPS real-service Chromium | 9 | 9 | 0 | 0 | `target/evidence/production-browser.xml`, `production-browser.log` |
 | Backup isolation/integrity boundaries | 4 | 4 | 0 | 0 | `target/evidence/backup.xml` |
-| Combined, without counting integration subset twice | 441 | 432 | 0 | 9 | `target/evidence/test-counts.json` |
+| Combined, without counting integration subset twice | 444 | 435 | 0 | 9 | `target/evidence/test-counts.json` |
 
 Also passed: locked `npm ci`, frontend typecheck, lint, production build, production dependency audit, verifier syntax check and CI YAML structural validation. Hosted GitHub Actions was not run.
 
