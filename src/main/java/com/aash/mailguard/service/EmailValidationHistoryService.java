@@ -6,11 +6,16 @@ import com.aash.mailguard.dns.DnsLookupService;
 import com.aash.mailguard.dns.DnsObservation;
 import com.aash.mailguard.dto.EmailValidationRequest;
 import com.aash.mailguard.dto.EmailValidationResponse;
+import com.aash.mailguard.dto.ValidationHistoryRow;
 import com.aash.mailguard.entity.EmailValidationHistory;
 import com.aash.mailguard.repository.EmailValidationHistoryRepository;
 import com.aash.mailguard.validator.EmailFormatValidator;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 
 @Service
@@ -38,6 +43,15 @@ public class EmailValidationHistoryService {
         saveHistory(response);
         return response;
     }
+
+    @Transactional(readOnly = true)
+    public List<ValidationHistoryRow> recentHistory(Long after, int limit) {
+        var page = PageRequest.of(0, limit);
+        return (after == null ? repository.findAllByOrderByIdDesc(page)
+                : repository.findByIdLessThanOrderByIdDesc(after, page)).stream()
+                .map(ValidationHistoryRow::new).toList();
+    }
+
 
     public record Computation(EmailValidationResponse response, boolean retryable) {
     }

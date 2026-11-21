@@ -2,14 +2,17 @@ package com.aash.mailguard.controller;
 
 import com.aash.mailguard.dto.EmailValidationRequest;
 import com.aash.mailguard.dto.EmailValidationResponse;
+import com.aash.mailguard.dto.ValidationHistoryRow;
 import com.aash.mailguard.service.EmailValidationHistoryService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -17,9 +20,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 @RestController
 @RequestMapping("/api/email")
 public class EmailValidationHistoryController {
+    private static final Set<String> HISTORY_PARAMS = Set.of("after", "limit");
 
     private final EmailValidationHistoryService service;
     private final byte[] apiKey;
@@ -49,6 +57,38 @@ public class EmailValidationHistoryController {
         return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .body(service.validate(request, suppliedKey != null));
     }
+
+    @GetMapping("/history")
+    public ResponseEntity<List<ValidationHistoryRow>> history(HttpServletRequest request,
+            @RequestHeader(value = "X-Job-API-Key", required = false) String suppliedKey) {
+        if (suppliedKey == null || apiKey.length == 0 || !MessageDigest.isEqual(
+                apiKey, suppliedKey.getBytes(StandardCharsets.UTF_8))) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        }
+        Map<String, String[]> params = request.getParameterMap();
+        if (params.keySet().stream().anyMatch(key -> !HISTORY_PARAMS.contains(key))
+                || params.values().stream().anyMatch(values -> values.length != 1)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        }
+        long after = 0;
+        int limit = 50;
+        try {
+            if (params.containsKey("after")) {
+                after = Long.parseLong(params.get("after")[0]);
+            }
+            if (params.containsKey("limit")) {
+                limit = Integer.parseInt(params.get("limit")[0]);
+            }
+        } catch (NumberFormatException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        }
+        if ((params.containsKey("after") && after < 1) || limit < 1 || limit > 100) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        }
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(service.recentHistory(params.containsKey("after") ? after : null, limit));
+    }
+
 
 
 }
