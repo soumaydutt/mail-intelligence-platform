@@ -15,6 +15,10 @@ This repository preserves the history and attribution of [the original MailGuard
 
 For an isolated disposable smoke, install Node.js 24, Docker Compose v2 and Chromium (`cd frontend && npm ci && npx playwright install chromium`), then return to the repository root and run `node scripts/prod/verify.mjs`. This creates a unique, local, self-signed TLS stack, exercises browser import/export and proxy abuse limits, stalls and resumes the worker to check Docker health, and verifies a separate restore with schema checks, eight-table content hashes and a read-only packaged-API import read. Its test-owned PostgreSQL volume and private archive remain for inspection; they are **not** production credentials or data. `node scripts/prod/verify.mjs --load` additionally runs five bounded 100-, 1,000- and 10,000-row synthetic invalid-address imports per profile. The archived volume is never removed by the script. Production startup requires operator-supplied certificates, restricted secret files, DNS egress control and the unresolved approvals listed in the release gates.
 
+CI uploads the API JAR produced by `mvn -B clean verify` and builds it with `docker build --target packaged -t mailguard-api:ci .`; the default Docker target still compiles from source. The disposable verifier accepts `--no-build` to use the API and proxy images already built by that CI run instead of rebuilding them. Use this flag only after building `mailguard-api:ci` and `mailguard-proxy:ci` from the same checkout; missing images remain errors. It can be combined with `--load`. API/proxy vulnerability scans and the final fail-closed security gate still apply.
+
+Merges to `main` require successful `verify` and `production-smoke` checks from GitHub Actions. A separate main-only ruleset enforces both jobs; the existing all-branch PR, linear-history, deletion, and force-push protections remain unchanged.
+
 ---
 ## ✨ Features
 - ✔ Email format validation
