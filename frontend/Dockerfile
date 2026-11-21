@@ -17,6 +17,7 @@ COPY --from=caddy-build /caddy /usr/bin/caddy
 COPY deploy/proxy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/dist /srv
 WORKDIR /srv
+ENV XDG_DATA_HOME=/data XDG_CONFIG_HOME=/config
 USER 10001:10001
 EXPOSE 8080 8443
 ENTRYPOINT ["/usr/bin/caddy"]
