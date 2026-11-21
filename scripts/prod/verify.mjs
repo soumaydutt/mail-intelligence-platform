@@ -2,7 +2,7 @@
 // Owns only a fresh random Compose project and its disposable recovery container.
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -13,6 +13,10 @@ import { assertMatchingIntegrity, rowDigests, schemaIntegrity, tableCounts } fro
 
 const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const project = `mailguard-p12-smoke-${randomBytes(4).toString('hex')}`;
+const evidenceDir = join(root, 'target', 'evidence');
+if (spawnSync('docker', ['volume', 'inspect', `${project}_postgres_data`], { stdio: 'ignore' }).status === 0) {
+  throw Error('Refusing to reuse an existing PostgreSQL volume');
+}
 const dir = mkdtempSync(join(tmpdir(), `${project}-`));
 try { chmodSync(dir, 0o755); } catch {}
 const password = randomBytes(48).toString('base64url');
@@ -175,7 +179,10 @@ async function main() {
   compose('config', '--quiet');
   started = true;
   compose('up', '--build', '-d', '--wait', '--wait-timeout', '360');
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(join(evidenceDir, 'compose-startup.json'), compose('ps', '--format', 'json'));
   const url = `https://localhost:${https}`;
+  console.log(`Disposable browser URL https://localhost:${https}`);
   expectStatus(await send(`${url}/`), 200);
   const redirect = await send(`http://localhost:${http}/validate`, 'GET', null, null, false);
   expectStatus(redirect, 301);
@@ -188,11 +195,38 @@ async function main() {
   const validation = await send(`${url}/api/email/validate`, 'POST', { email: 'invalid-address' }, apiKey);
   expectStatus(validation, 200);
   if (JSON.parse(validation.body).status !== 'INVALID') throw Error('Unexpected validation result');
-  run(process.execPath, [join(root, 'frontend/node_modules/@playwright/test/cli.js'), 'test', '--config=playwright.production.config.ts'], {
-    cwd: join(root, 'frontend'), timeout: 240000,
-    env: { ...process.env, PROD_TEST_BASE_URL: url, PROD_TEST_API_KEY_FILE: join(dir, 'jobs_api_key') },
+  const browserOutput = run(process.execPath, [join(root, 'frontend/node_modules/@playwright/test/cli.js'), 'test', '--config=playwright.production.config.ts'], {
+    cwd: join(root, 'frontend'), timeout: 600000,
+    env: { ...process.env, PROD_TEST_BASE_URL: url, PROD_TEST_API_KEY_FILE: join(dir, 'jobs_api_key'),
+      PROD_TEST_PROJECT: project, PROD_TEST_COMPOSE_ENV_FILE: envFile, PROD_TEST_COMPOSE_FILE: join(root, 'compose.prod.yaml') },
   });
+  writeFileSync(join(evidenceDir, 'production-browser.log'), browserOutput);
+  console.log(browserOutput);
+  const proxyLogs = compose('logs', '--no-color', 'proxy');
+  if (Object.values(values).some(value => proxyLogs.includes(value))) {
+    throw Error('Proxy logs exposed a mounted secret');
+  }
+  console.log('Verified proxy logs omit mounted secrets after authenticated API outage');
   await drillWorkerHealth();
+  console.log('Flyway successful versions, history rows, completed jobs, imports, import rows, events, suppressions: '
+    + compose('exec', '-T', 'postgres', 'psql', '-XAt', '-v', 'ON_ERROR_STOP=1',
+      '-U', 'mailguard', '-d', 'mailguard', '-c',
+      "SELECT (SELECT string_agg(version, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE success),"
+      + '(SELECT count(*) FROM email_validation_history),'
+      + "(SELECT count(*) FROM verification_job WHERE state = 'COMPLETED'),"
+      + '(SELECT count(*) FROM import_batch),(SELECT count(*) FROM import_row),'
+      + '(SELECT count(*) FROM delivery_event),(SELECT count(*) FROM delivery_suppression)').trim());
+  const persisted = JSON.parse(compose('exec', '-T', 'postgres', 'psql', '-XAt', '-v', 'ON_ERROR_STOP=1',
+    '-U', 'mailguard', '-d', 'mailguard', '-c',
+    "SELECT json_build_object('flyway', (SELECT json_agg(version ORDER BY installed_rank) FROM flyway_schema_history WHERE success),"
+    + "'historyRows', (SELECT count(*) FROM email_validation_history),"
+    + "'jobs', (SELECT json_object_agg(state, count) FROM (SELECT state, count(*) FROM verification_job GROUP BY state) states),"
+    + "'linkedJobHistoryRows', (SELECT count(*) FROM email_validation_history WHERE job_id IS NOT NULL),"
+    + "'imports', (SELECT count(*) FROM import_batch), 'importRows', (SELECT count(*) FROM import_row),"
+    + "'events', (SELECT count(*) FROM delivery_event), 'suppressions', (SELECT count(*) FROM delivery_suppression))"));
+  writeFileSync(join(evidenceDir, 'live-stack.json'), JSON.stringify({
+    project, url, health: JSON.parse(health.body), validation: JSON.parse(validation.body), persisted,
+  }, null, 2) + '\n');
   if (process.argv.includes('--load')) {
     console.log(run(process.execPath, ['scripts/prod/load.mjs'], {
       env: { ...process.env, PROD_TEST_PROJECT: project, PROD_TEST_BASE_URL: url,
@@ -216,6 +250,9 @@ async function main() {
   sourceSchema.rows = await rowDigests(source, 'mailguard', 'mailguard', tables);
   restoredSchema.rows = await rowDigests(target, 'mailguard', 'mailguard', tables);
   assertMatchingIntegrity(sourceSchema, restoredSchema);
+  writeFileSync(join(evidenceDir, 'restore-integrity.json'), JSON.stringify({
+    source: sourceSchema, restored: restoredSchema,
+  }, null, 2) + '\n');
   if (recovery.tables['public.flyway_schema_history'] !== '5' || Number(recovery.tables['public.email_validation_history']) < 1
       || Number(recovery.tables['public.import_batch']) < 1) throw Error('Recovered database lacks expected records');
   await probeRestoredApplication();
@@ -233,7 +270,8 @@ finally {
   if (started) {
     try {
       if (process.exitCode && process.exitCode !== 0) {
-        console.error(compose('logs', '--tail=50'));
+        console.error(Object.values(values).reduce((text, value) => text.replaceAll(value, '[REDACTED]'),
+          compose('logs', '--tail=50')));
       }
       compose('down', '--remove-orphans');
     }
