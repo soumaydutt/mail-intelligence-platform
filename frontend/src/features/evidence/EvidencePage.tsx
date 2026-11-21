@@ -131,7 +131,7 @@ export default function EvidencePage() {
           <option value="DELIVERED">Delivered</option><option value="COMPLAINT">Complaint</option><option value="UNSUBSCRIBED">Unsubscribed</option>
         </select>
         <label className="label" htmlFor="external-event-id">Trusted external event ID</label>
-        <input className="input" id="external-event-id" required maxLength={255} pattern="[A-Za-z0-9][A-Za-z0-9._:-]*" value={externalEventId} onChange={event => setExternalEventId(event.target.value)} />
+        <input className="input" id="external-event-id" required maxLength={255} pattern="[A-Za-z0-9][A-Za-z0-9._:\-]*" value={externalEventId} onChange={event => setExternalEventId(event.target.value)} />
         <label className="label" htmlFor="event-occurred-at">Occurred at (local time; sent as UTC)</label>
         <input className="input" id="event-occurred-at" type="datetime-local" required value={occurredAt} onChange={event => setOccurredAt(event.target.value)} />
         <label className="label" htmlFor="enhanced-code">Enhanced status code (optional)</label>
