@@ -152,6 +152,33 @@ class PostgresHttpEndToEndTest {
     }
 
     @Test
+    void authenticatedHistorySurvivesApplicationRestartWithBoundedPages() throws Exception {
+        validate("old-invalid", 200);
+        validate("new-invalid", 200);
+        application.close();
+        application = startApplication();
+
+        HttpResponse<String> denied = getHistory("?limit=1", null);
+        assertEquals(401, denied.statusCode());
+        assertFalse(denied.body().contains("new-invalid"));
+
+        HttpResponse<String> first = getHistory("?limit=1", "synthetic-history-key");
+        assertEquals(200, first.statusCode());
+        assertEquals("no-store", first.headers().firstValue("Cache-Control").orElse(null));
+        JsonNode rows = JSON.readTree(first.body());
+        assertEquals(1, rows.size());
+        assertEquals("new-invalid", rows.get(0).get("email").asText());
+
+        HttpResponse<String> second = getHistory("?after=" + rows.get(0).get("id").asLong()
+                + "&limit=1", "synthetic-history-key");
+        JsonNode older = JSON.readTree(second.body());
+        assertEquals(200, second.statusCode());
+        assertEquals("old-invalid", older.get(0).get("email").asText());
+        assertEquals(1, older.size());
+    }
+
+
+    @Test
     void concurrentHttpRequestsPersistAccuratelyWithoutDroppingRows() throws Exception {
         when(dns.lookup("concurrent.test")).thenReturn(observation(DnsObservation.Outcome.MAIL_ROUTE,
                 DnsObservation.Reason.MX_PRESENT, "concurrent.test"));
@@ -200,7 +227,8 @@ class PostgresHttpEndToEndTest {
                 .run("--server.port=0", "--spring.datasource.url=" + postgres.getJdbcUrl(),
                         "--spring.datasource.username=" + postgres.getUsername(),
                         "--spring.datasource.password=" + postgres.getPassword(),
-                        "--spring.jpa.hibernate.ddl-auto=validate", "--spring.flyway.enabled=true");
+                        "--spring.jpa.hibernate.ddl-auto=validate", "--spring.flyway.enabled=true",
+                        "--jobs.api-key=synthetic-history-key");
         application = started;
         dns = started.getBean(DnsLookupService.class);
         jdbc = started.getBean(JdbcTemplate.class);
@@ -221,6 +249,14 @@ class PostgresHttpEndToEndTest {
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();
         return http.send(request, HttpResponse.BodyHandlers.ofString());
     }
+
+    private HttpResponse<String> getHistory(String query, String key) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port
+                + "/api/email/history" + query)).GET();
+        if (key != null) request.header("X-Job-API-Key", key);
+        return http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
 
     private static DnsObservation observation(DnsObservation.Outcome outcome, DnsObservation.Reason reason,
                                                String domain) {

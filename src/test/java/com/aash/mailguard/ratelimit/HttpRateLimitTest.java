@@ -51,6 +51,7 @@ class HttpRateLimitTest {
 
     private static MockHttpServletRequest request(String path, String peer, boolean authenticated) {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+        request.setServletPath(path);
         request.setRemoteAddr(peer);
         if (authenticated) request.addHeader("X-Job-API-Key", KEY);
         request.addHeader("X-Forwarded-For", "203.0.113.123");
@@ -183,6 +184,28 @@ class HttpRateLimitTest {
         assertEquals("no-store", outage.getHeader("Cache-Control"));
         assertFalse(outage.getContentAsString().contains("/id/"));
     }
+    @Test
+    void historyRequiresAdminQuotaAndFailsClosedOnValkeyOutage() throws Exception {
+        HandlerMethod history = handler(EmailValidationHistoryController.class, "history");
+        when(redis.take(contains(":public:"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500));
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/email/history", "192.0.2.4", false), denied, history));
+        assertEquals(401, denied.getStatus());
+        assertEquals("no-store", denied.getHeader("Cache-Control"));
+        when(redis.take(contains(":import_read:admin"), eq(2), eq(60)))
+                .thenReturn(new RedisTokenBucket.Result(true, 1, 500))
+                .thenThrow(new QueryTimeoutException("synthetic timeout"));
+        assertTrue(limiter.preHandle(request("/api/email/history", "192.0.2.4", true),
+                new MockHttpServletResponse(), history));
+        MockHttpServletResponse outage = new MockHttpServletResponse();
+        assertFalse(limiter.preHandle(request("/api/email/history", "192.0.2.4", true), outage, history));
+        assertEquals(503, outage.getStatus());
+        assertEquals("no-store", outage.getHeader("Cache-Control"));
+        assertEquals("/api/email/history", new ObjectMapper().readTree(outage.getContentAsByteArray())
+                .get("path").asText());
+    }
+
 
     @Test
     void authorizedUploadAndExportUseFixedAdminKeys() throws Exception {

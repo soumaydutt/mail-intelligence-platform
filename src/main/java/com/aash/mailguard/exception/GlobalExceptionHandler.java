@@ -30,7 +30,8 @@ public class GlobalExceptionHandler {
         boolean suppressionRoute = path.equals("/api/suppressions") || path.startsWith("/api/suppressions/");
         boolean deliveryRoute = eventRoute || evidenceRoute || suppressionRoute;
         boolean validationRoute = path.equals("/api/email/validate");
-        boolean protectedRoute = jobRoute || importRoute || deliveryRoute;
+        boolean historyRoute = path.equals("/api/email/history");
+        boolean protectedRoute = jobRoute || importRoute || deliveryRoute || historyRoute;
         HttpStatus status;
         if (jobRoute && ex instanceof JobStore.QueueFull) {
             status = HttpStatus.TOO_MANY_REQUESTS;
@@ -75,13 +76,13 @@ public class GlobalExceptionHandler {
         errorResponse.setStatus(status.value());
         errorResponse.setPath(jobRoute ? "/api/jobs" : importRoute ? "/api/imports"
                 : eventRoute ? "/api/delivery-events" : evidenceRoute ? "/api/delivery-evidence/lookup"
-                : suppressionRoute ? "/api/suppressions"
+                : suppressionRoute ? "/api/suppressions" : historyRoute ? "/api/email/history"
                 : path.equals("/api/email/validate") || path.equals("/api/email/test") ? path : "/");
         if (status == HttpStatus.TOO_MANY_REQUESTS) {
             return ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store")
                     .header(HttpHeaders.RETRY_AFTER, "1").body(errorResponse);
         }
-        return deliveryRoute
+        return protectedRoute
                 ? ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store").body(errorResponse)
                 : new ResponseEntity<>(errorResponse, status);
     }

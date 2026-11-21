@@ -221,7 +221,8 @@ public class HttpRateLimit implements HandlerInterceptor, WebMvcConfigurer {
     }
 
     private static String publicPath(String path) {
-        if (path.equals("/api/email/validate") || path.equals("/api/email/test")) {
+        if (path.equals("/api/email/validate") || path.equals("/api/email/test")
+                || path.equals("/api/email/history")) {
             return path;
         }
         if (path.startsWith("/api/jobs")) return "/api/jobs";
@@ -242,6 +243,7 @@ public class HttpRateLimit implements HandlerInterceptor, WebMvcConfigurer {
         if (type == EmailValidationHistoryController.class) {
             return switch (name) {
                 case "validate" -> Policy.PUBLIC;
+                case "history" -> Policy.IMPORT_READ;
                 case "test" -> Policy.TEST;
                 default -> null;
             };

@@ -97,6 +97,62 @@ class EmailValidationApiTest {
         assertEquals(1, repository.count());
         verifyNoInteractions(dnsLookup);
     }
+    @Test
+    void adminHistoryReadsOnlyBoundedStoredRowsWithKeysetAndNoCache() throws Exception {
+        sendValidation("one-invalid");
+        sendValidation("two-invalid");
+        sendValidation("three-invalid");
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            String url = "http://localhost:" + port + "/api/email/history";
+            HttpResponse<String> first = client.send(HttpRequest.newBuilder(URI.create(url + "?limit=2"))
+                    .header("X-Job-API-Key", "synthetic-history-key").GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, first.statusCode());
+            assertEquals("no-store", first.headers().firstValue("Cache-Control").orElse(null));
+            JsonNode rows = objectMapper.readTree(first.body());
+            assertEquals(2, rows.size());
+            assertEquals("three-invalid", rows.get(0).get("email").asText());
+            assertEquals("two-invalid", rows.get(1).get("email").asText());
+            assertEquals("INVALID", rows.get(0).get("status").asText());
+            assertTrue(rows.get(0).get("formatValid").isBoolean());
+            assertTrue(rows.get(0).get("mxRecordFound").isNull());
+            assertTrue(rows.get(0).get("createdAt").isTextual());
+            assertEquals(9, rows.get(0).size());
+            assertTrue(rows.get(0).get("id").asLong() > rows.get(1).get("id").asLong());
+
+            HttpResponse<String> next = client.send(HttpRequest.newBuilder(URI.create(url
+                    + "?limit=2&after=" + rows.get(1).get("id").asLong()))
+                    .header("X-Job-API-Key", "synthetic-history-key").GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            JsonNode last = objectMapper.readTree(next.body());
+            assertEquals(1, last.size());
+            assertEquals("one-invalid", last.get(0).get("email").asText());
+
+            HttpResponse<String> denied = client.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, denied.statusCode());
+            assertEquals("no-store", denied.headers().firstValue("Cache-Control").orElse(null));
+            assertFalse(denied.body().contains("one-invalid"));
+            assertEquals("/api/email/history", objectMapper.readTree(denied.body()).get("path").asText());
+            HttpResponse<String> wrongKey = client.send(HttpRequest.newBuilder(URI.create(url))
+                    .header("X-Job-API-Key", "wrong").GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, wrongKey.statusCode());
+            assertFalse(wrongKey.body().contains("one-invalid"));
+            for (String query : List.of("?limit=101", "?limit=0", "?after=0", "?after=-1",
+                    "?after=nan", "?limit=2&limit=3", "?unexpected=one-invalid")) {
+                HttpResponse<String> rejected = client.send(HttpRequest.newBuilder(URI.create(url + query))
+                        .header("X-Job-API-Key", "synthetic-history-key").GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertEquals(400, rejected.statusCode(), query);
+                assertFalse(rejected.body().contains("one-invalid"), query);
+            }
+        }
+        assertEquals(3, repository.count());
+        verifyNoInteractions(dnsLookup);
+    }
+
 
     @Test
     void invalidSyntaxSkipsAuthorizedHistoricalLookupAndPreservesLegacyFields() throws Exception {
