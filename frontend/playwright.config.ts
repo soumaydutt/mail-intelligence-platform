@@ -2,13 +2,14 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: './test-results/development',
   timeout: 60000,
   testIgnore: 'production.spec.ts',
   expect: { timeout: 12000 },
   workers: 1,
   fullyParallel: false,
   retries: 0,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: [['list'], ['html', { open: 'never' }], ['junit', { outputFile: '../target/evidence/development-browser.xml' }]],
   globalSetup: './tests/e2e/setup.ts',
   globalTeardown: './tests/e2e/teardown.ts',
   use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:5173', trace: 'off', screenshot: 'off', video: 'off' },
