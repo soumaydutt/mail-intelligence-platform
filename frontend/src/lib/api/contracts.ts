@@ -18,6 +18,12 @@ export const validationSchema = z.object({
   status: z.string(), message: z.string(), historicalEvidence: evidenceSchema.optional(),
 })
 export type Validation = z.infer<typeof validationSchema>
+export const historySchema = z.object({
+  id: z.number().int().positive(), email: nullableText, domain: nullableText,
+  formatValid: nullableBool, mxRecordFound: nullableBool, smtpVerified: nullableBool,
+  status: nullableText, message: nullableText, createdAt: z.string(),
+})
+
 
 export const submissionSchema = z.object({ id: uuid, reused: z.boolean() })
 export const jobSchema = z.object({

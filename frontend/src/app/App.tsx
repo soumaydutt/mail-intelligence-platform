@@ -20,7 +20,7 @@ const SuppressionsPage = lazy(() => import('../features/suppressions/Suppression
 const links = [
   { to: '/', text: 'Overview', icon: LayoutDashboard }, { to: '/validate', text: 'Validate email', icon: MailCheck },
   { to: '/bulk', text: 'Bulk validation', icon: Upload }, { to: '/jobs', text: 'Jobs', icon: BriefcaseBusiness },
-  { to: '/history', text: 'Session history', icon: History }, { to: '/evidence', text: 'Delivery evidence', icon: ScanSearch },
+  { to: '/history', text: 'History', icon: History }, { to: '/evidence', text: 'Delivery evidence', icon: ScanSearch },
   { to: '/suppressions', text: 'Suppressions', icon: ShieldCheck }, { to: '/settings', text: 'Settings', icon: Settings },
 ] as const
 
