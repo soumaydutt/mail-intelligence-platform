@@ -156,8 +156,9 @@ async function drillWorkerHealth() {
 }
 
 async function main() {
-  if (process.argv.slice(2).some(value => value !== '--load') || process.argv.slice(2).length > 1) {
-    throw Error('Only the optional --load disposable profile is supported');
+  const args = process.argv.slice(2);
+  if (args.some((value, index) => (value !== '--load' && value !== '--no-build') || args.indexOf(value) !== index)) {
+    throw Error('Only optional --load and --no-build flags are supported, without repeats');
   }
   const http = await port();
   const https = await port();
@@ -178,7 +179,7 @@ async function main() {
   console.log(`Disposable Compose project ${project}; private artifacts ${dir}`);
   compose('config', '--quiet');
   started = true;
-  compose('up', '--build', '-d', '--wait', '--wait-timeout', '360');
+  compose('up', process.argv.includes('--no-build') ? '--no-build' : '--build', '-d', '--wait', '--wait-timeout', '360');
   mkdirSync(evidenceDir, { recursive: true });
   writeFileSync(join(evidenceDir, 'compose-startup.json'), compose('ps', '--format', 'json'));
   const url = `https://localhost:${https}`;

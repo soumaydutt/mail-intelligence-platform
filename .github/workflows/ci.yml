@@ -22,6 +22,11 @@ jobs:
           java-version: '21'
           cache: maven
       - run: mvn -B clean verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-api-package
+          path: target/mailguard-0.0.1-SNAPSHOT.jar
+          if-no-files-found: error
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -57,6 +62,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-api-package
+          path: target
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -90,13 +99,13 @@ jobs:
           exit-code: '1'
           format: json
           output: target/evidence/filesystem-scan.json
-      - run: docker build -t mailguard-api:ci .
+      - run: docker build --target packaged -t mailguard-api:ci .
       - run: docker build -f frontend/Dockerfile -t mailguard-proxy:ci .
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: node scripts/prod/verify.mjs
+      - run: node scripts/prod/verify.mjs --no-build
         if: github.event_name != 'workflow_dispatch'
-      - run: node scripts/prod/verify.mjs --load
+      - run: node scripts/prod/verify.mjs --load --no-build
         if: github.event_name == 'workflow_dispatch'
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         id: api_image_scan
