@@ -126,8 +126,8 @@ function ImportDetail({ id }: { id: string }) {
         <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th scope="col">Row</th><th scope="col">Email</th><th scope="col">Row state</th><th scope="col">Job</th><th scope="col">Result</th><th scope="col">Details</th></tr></thead>
           <tbody>{rows.map(row => <tr key={row.ordinal} className="border-t align-top"><th scope="row">{row.ordinal}</th><td className="break-all">{row.email ?? '—'}</td><td><Status value={row.rowState} /></td><td>{row.jobState ?? '—'}</td><td>{row.resultStatus ?? '—'}</td><td>{[row.reason, row.failureCode, row.message, row.duplicateOf != null ? `Duplicate of row ${row.duplicateOf}` : null].filter(Boolean).join(' · ') || '—'}</td></tr>)}</tbody>
         </table></div>
-        <div className="mt-3 flex items-center gap-3"><span className="muted">After row {after}</span>{after > 0 && <Button variant="secondary" onClick={() => setAfter(0)}>First page</Button>}{rows.length === pageSize && <Button variant="secondary" onClick={() => setAfter(rows[rows.length - 1]!.ordinal)}>Next page</Button>}</div>
       </>}
+      {(after > 0 || rows.length > 0) && <div className="mt-3 flex items-center gap-3"><span className="muted">After row {after}</span>{after > 0 && <Button variant="secondary" disabled={results.isFetching} onClick={() => setAfter(0)}>First page</Button>}{rows.length === pageSize && <Button variant="secondary" disabled={results.isFetching} onClick={() => setAfter(rows[rows.length - 1]!.ordinal)}>Next page</Button>}</div>}
     </Card>
     <ConfirmDialog open={confirm} title="Cancel import?" busy={cancel.isPending} onConfirm={() => cancel.mutate()} onClose={() => setConfirm(false)}>Unfinished rows will be cancelled. Existing results remain available.</ConfirmDialog>
   </div>

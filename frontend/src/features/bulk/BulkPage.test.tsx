@@ -81,6 +81,45 @@ describe('bulk import', () => {
     expect(download).toHaveBeenCalledWith(`/api/imports/${id}/export`, expect.objectContaining({ timeoutMs: 120000 }))
   })
 
+  it('recovers the first page after a full final page leads to an empty page and bounds navigation while fetching', async () => {
+    const user = userEvent.setup()
+    const rows = Array.from({ length: 100 }, (_, index) => ({ ordinal: (index + 1) * 2, email: null, rowState: 'REJECTED', duplicateOf: null, reason: 'EMPTY', jobState: null, resultStatus: null, failureCode: null, formatValid: null, mxRecordFound: null, smtpVerified: null, domain: null, message: null }))
+    let finishEmpty!: (value: typeof rows) => void
+    let finishRecovery!: (value: typeof rows) => void
+    const emptyPage = new Promise<typeof rows>(resolve => { finishEmpty = resolve })
+    const recoveredPage = new Promise<typeof rows>(resolve => { finishRecovery = resolve })
+    let recovering = false
+    json.mockImplementation(async (path: string) => {
+      if (path.endsWith('/results?after=200&limit=100')) return emptyPage
+      if (path.endsWith('/results?after=0&limit=100')) return recovering ? recoveredPage : rows
+      return { ...progress, inputRows: 100, acceptedRows: 100, completedRows: 100 }
+    })
+    mount(`/bulk/${id}`)
+    await user.click(await screen.findByRole('button', { name: 'Next page' }))
+    expect(await screen.findByText('Loading results…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'First page' })).toBeDisabled()
+    expect(json).toHaveBeenCalledWith(`/api/imports/${id}/results?after=200&limit=100`, expect.anything(), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    const pendingCalls = json.mock.calls.length
+    await user.click(screen.getByRole('button', { name: 'First page' }))
+    expect(json).toHaveBeenCalledTimes(pendingCalls)
+    await act(async () => { finishEmpty([]) })
+    expect(await screen.findByText('No rows available yet.')).toBeInTheDocument()
+    expect(screen.getByText('After row 200')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'First page' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled()
+    recovering = true
+    await user.click(screen.getByRole('button', { name: 'First page' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled())
+    const recoveryCalls = json.mock.calls.length
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
+    expect(json).toHaveBeenCalledTimes(recoveryCalls)
+    await act(async () => { finishRecovery(rows) })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next page' })).toBeEnabled())
+    expect(screen.getByText('After row 0')).toBeInTheDocument()
+    expect(screen.getAllByRole('row')).toHaveLength(101)
+    expect(screen.queryByRole('button', { name: 'First page' })).not.toBeInTheDocument()
+  })
   it('stops polling terminal imports and confirms cancellation on active imports', async () => {
     json.mockImplementation(async (path: string, _schema: unknown, options?: { method?: string }) => options?.method === 'DELETE' ? { ...progress, state: 'CANCELLED' } : path.includes('/results?') ? [] : { ...progress, state: 'READY', finishedAt: null })
     const user = userEvent.setup()
