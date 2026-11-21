@@ -144,8 +144,8 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 
 Local real-service verification is complete; public-production approval is not. See [full A–H evidence and endpoint matrix](docs/LIVE_BACKEND_VERIFICATION.md).
 
-- Final generated counts: backend 347 total / 338 passed / nine opt-in skips; frontend units 72/72; development Chromium 9/9; production HTTPS Chromium 9/9; backup boundaries 4/4. The 96 real PostgreSQL/Valkey cases are a subset of the backend count, not additional tests.
+- Final generated counts after preserving main's three additional SMTP parser cases: backend 350 total / 341 passed / nine opt-in skips; frontend units 72/72; development Chromium 9/9; production HTTPS Chromium 9/9; backup boundaries 4/4. Combined: 444 total / 435 passed / nine skipped / zero failures/errors. The 96 real PostgreSQL/Valkey cases are a subset of the backend count, not additional tests.
 - Disposable project `mailguard-p12-smoke-6875d02e` passed PostgreSQL/API/worker restart persistence, exactly-once job history, worker stall/recovery, eight-table source/restored content hashes and packaged read-only restored import access. Containers stopped without volume deletion.
 - Exercised immutable API/worker and proxy image IDs and filesystem scans returned zero HIGH/CRITICAL findings. Seven MODERATE frontend development dependency findings remain; production-only npm audit found none.
 - CI Java/Docker prerequisites and machine-readable artifacts are configured, but hosted CI has not run. Both Gemini review attempts failed at provider startup with HTTP 404; the independent handoff is prepared, not approved.
-- Original checkout and its six edits were not accessed or rehashed in this pass. This worktree's entry changes were preserved. No commit, push, deployment or public approval.
+- Original checkout and its six edits were not accessed or rehashed in this pass. Entry changes were preserved. The owner separately authorized commits, origin push, a draft PR and synchronization with latest main; no PR merge, deployment, volume mutation or public approval is authorized.
