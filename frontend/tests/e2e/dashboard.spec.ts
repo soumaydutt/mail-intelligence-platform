@@ -33,7 +33,7 @@ test.describe.serial('disposable PostgreSQL, Valkey, packaged API, and worker', 
     await expect(page.getByText('Page not found')).toBeVisible()
   })
 
-  test('individual validation shows backend uncertainty and only session history', async ({ page }) => {
+  test('individual validation shows backend uncertainty and session history', async ({ page }) => {
     await page.goto('/validate')
     await page.getByLabel('Email address').fill('person@example.invalid')
     await page.getByRole('button', { name: 'Validate email' }).click()
@@ -42,11 +42,12 @@ test.describe.serial('disposable PostgreSQL, Valkey, packaged API, and worker', 
     await page.getByLabel('Email address').fill('bad@example..invalid')
     await page.getByRole('button', { name: 'Validate email' }).click()
     await expect(page.getByText('INVALID means the backend rejected the address format.')).toBeVisible()
-    await page.getByRole('link', { name: 'Session history' }).click()
-    await expect(page.getByRole('cell', { name: 'person@example.invalid' })).toBeVisible()
-    await expect(page.getByRole('cell', { name: 'bad@example..invalid' })).toBeVisible()
+    await page.getByRole('link', { name: 'History', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Checks from this browser session' })).toBeVisible()
+    await expect(page.getByRole('cell', { name: 'person@example.invalid' }).last()).toBeVisible()
+    await expect(page.getByRole('cell', { name: 'bad@example..invalid' }).last()).toBeVisible()
     await page.reload()
-    await expect(page.getByText('No session validations')).toBeVisible()
+    await expect(page.getByText('No session validations.')).toBeVisible()
   })
 
   test('rejects invalid key, clears draft, authenticates and never persists key', async ({ page }) => {
