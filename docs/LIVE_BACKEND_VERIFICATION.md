@@ -4,7 +4,7 @@
 
 ## A. Scope and real stack startup
 
-All source work targeted `C:/Users/sbsam/MailGuard-phase12` on its existing `feature/production-hardening` branch. Entry inventory contained 28 modified files and two untracked source files; those existing changes were retained. The original checkout and its six modifications were not accessed or rehashed. The live-stack verification preceded separate owner authorization for commits, origin push, main synchronization and a draft PR. That authorization does not permit merging the PR, public deployment, retained-volume overwrite or database reset.
+Source verification targeted `C:/Users/sbsam/MailGuard-phase12` on `feature/production-hardening`. Entry inventory contained 28 modified files and two untracked source files; those changes were retained. The original checkout and its six modifications were not accessed or rehashed. The live-stack verification preceded separate owner authorization for commits, origin push, main synchronization and a draft PR. Repository rules rejected the existing-branch update and merge commit; the original local branch is preserved while publication uses a linear `feature/live-backend-verification` branch with the same verified tree. No protection bypass, force push, PR merge, public deployment, retained-volume overwrite or database reset is authorized.
 
 Read `AGENTS.md`, current plan/decisions/progress, Spring properties, `compose.prod.yaml`, `.env.example`, deployment instructions and CI/verifier scripts before startup.
 
