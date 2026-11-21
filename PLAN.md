@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: Phase 12 is a locally verified single-host deployment candidate on `feature/production-hardening`; draft PR preparation and synchronization with latest `origin/main` are separately authorized. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Public release remains blocked by owner-scoped identity, approved retention/erasure and legal holds, backup encryption/expiry, DNS egress, production TLS and upstream license rights. The owner's two irrelevant MySQL rows remain excluded.
+Status: Phase 12 is a locally verified single-host deployment candidate. Draft publication uses linear branch `feature/live-backend-verification` from latest `origin/main`; the original `feature/production-hardening` branch remains preserved locally. GitHub rejected its existing-branch update and merge commit under repository-wide rules, so no protection was bypassed or remote history rewritten. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Public release remains blocked by owner-scoped identity, approved retention/erasure and legal holds, backup encryption/expiry, DNS egress, production TLS and upstream license rights. The owner's two irrelevant MySQL rows remain excluded.
 
 ## Goals and current scope
 
