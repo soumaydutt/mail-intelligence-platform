@@ -37,6 +37,20 @@ beforeEach(() => {
 })
 
 describe('EvidencePage', () => {
+  it('enforces provider identifier characters with browser Unicode-set pattern validation', () => {
+    renderPage()
+    const input = screen.getByLabelText<HTMLInputElement>('Trusted external event ID')
+    for (const value of ['provider-77', 'a.b:c_d-9', '7']) {
+      fireEvent.change(input, { target: { value } })
+      expect(input.checkValidity(), value).toBe(true)
+    }
+    for (const value of ['-provider', 'provider/id', 'provider id', 'provider|id', 'évent']) {
+      fireEvent.change(input, { target: { value } })
+      expect(input.validity.patternMismatch, value).toBe(true)
+    }
+    expect(api.json).not.toHaveBeenCalled()
+  })
+
   it('only looks up submitted email in POST body and distinguishes uncertain bounce from suppression', async () => {
     api.json.mockResolvedValueOnce(snapshot)
     const user = userEvent.setup()
