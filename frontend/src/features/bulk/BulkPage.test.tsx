@@ -131,3 +131,50 @@ describe('bulk import', () => {
   })
 
 })
+
+describe('import UUID navigation', () => {
+  it.each([
+    '12345678-abcd-0abc-1abc-123456789abc',
+    '12345678-ABCD-0ABC-1ABC-123456789ABC',
+  ])('opens backend-compatible direct import link %s and parses its response', async importId => {
+    const fetcher = vi.fn(async (path: string) => new Response(JSON.stringify(path.includes('/results?') ? [] : { ...progress, id: importId }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    vi.mocked(useSession).mockReturnValue({ ...vi.mocked(useSession)(), api: createApi('key') })
+    mount(`/bulk/${importId}`)
+    expect(await screen.findByRole('heading', { name: `Import ${importId}` })).toBeInTheDocument()
+    expect(await screen.findByText('No rows available yet.')).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith(`/api/imports/${importId}`, expect.anything())
+  })
+
+  it.each([
+    '12345678-abcd-0abc-1abc-123456789abc',
+    '12345678-ABCD-0ABC-1ABC-123456789ABC',
+  ])('looks up backend-compatible import ID %s', async importId => {
+    const user = userEvent.setup()
+    const fetcher = vi.fn(async (path: string) => new Response(JSON.stringify(path.includes('/results?') ? [] : { ...progress, id: importId }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    vi.mocked(useSession).mockReturnValue({ ...vi.mocked(useSession)(), api: createApi('key') })
+    mount()
+    await user.type(screen.getByLabelText('Import UUID'), ` ${importId} `)
+    await user.click(screen.getByRole('button', { name: 'Open import' }))
+    expect(await screen.findByRole('heading', { name: `Import ${importId}` })).toBeInTheDocument()
+    expect(trackImport).toHaveBeenCalledWith(importId)
+    expect(fetcher).toHaveBeenCalledWith(`/api/imports/${importId}`, expect.anything())
+  })
+
+  it.each(['1-1-1-1-1', '12345678-abcd-0abc-1abc-123456789abg'])('rejects malformed direct import ID %s before fetching', async importId => {
+    mount(`/bulk/${importId}`)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a valid import UUID.')
+    expect(json).not.toHaveBeenCalled()
+  })
+
+  it.each(['1-1-1-1-1', '12345678-abcd-0abc-1abc-123456789abg'])('rejects malformed import lookup %s before fetching', async importId => {
+    const user = userEvent.setup()
+    mount()
+    await user.type(screen.getByLabelText('Import UUID'), importId)
+    await user.click(screen.getByRole('button', { name: 'Open import' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a valid import UUID.')
+    expect(trackImport).not.toHaveBeenCalled()
+    expect(json).not.toHaveBeenCalled()
+  })
+})

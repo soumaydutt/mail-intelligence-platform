@@ -2,10 +2,9 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router'
-import { z } from 'zod'
 import { useNotice } from '../../app/notifications'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorState, Status } from '../../components/ui'
-import { jobSchema, submissionSchema } from '../../lib/api/contracts'
+import { jobSchema, submissionSchema, uuidSchema } from '../../lib/api/contracts'
 import type { Job } from '../../lib/api/contracts'
 import { ApiError } from '../../lib/api/client'
 import { useSession } from '../../lib/auth/session'
@@ -102,12 +101,12 @@ export default function JobsPage() {
   function openId(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const cleaned = lookup.trim()
-    if (!z.uuid().safeParse(cleaned).success) { setLookupError('Enter a valid job UUID.'); return }
+    if (!uuidSchema.safeParse(cleaned).success) { setLookupError('Enter a valid job UUID.'); return }
     setLookupError('')
     trackJob(cleaned)
     void navigate(`/jobs/${cleaned}`)
   }
-  if (id) return z.uuid().safeParse(id).success ? <JobDetail key={id} id={id} /> : <ErrorState error={new ApiError('Enter a valid job UUID.', 400)} />
+  if (id) return uuidSchema.safeParse(id).success ? <JobDetail key={id} id={id} /> : <ErrorState error={new ApiError('Enter a valid job UUID.', 400)} />
   if (!connected) return <EmptyState title="Administrator access required">Connect an administrator key to submit and view jobs.</EmptyState>
   return <div className="space-y-5">
     <h1 className="text-2xl font-bold">Validation jobs</h1>
