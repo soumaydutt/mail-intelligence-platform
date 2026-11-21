@@ -11,7 +11,7 @@ export default function Overview() {
     <header><p className="eyebrow">Operations / Overview</p><h2 className="page-title">Clarity for every address.</h2><p className="lead">Live connectivity and work from this browser session. No global counts are inferred from limited API responses.</p></header>
     <div className="grid">
       <Card><div className="caption">Backend connection</div><h2>{health.isPending ? 'Checking…' : health.isError ? 'Unavailable' : health.data.status === 'UP' ? 'Connected' : health.data.status}</h2><p className="muted small">Health only; administrative admission may fail independently.</p>{health.isError && <ErrorState error={health.error} onRetry={() => void health.refetch()} />}</Card>
-      <Card><div className="caption">Administrator</div><h2>{connected ? 'Connected' : 'Disconnected'}</h2><p className="muted small">{connected ? 'Single shared development key. Disconnect when finished.' : 'Connect to access imports, jobs, delivery evidence and suppressions.'}</p></Card>
+      <Card><div className="caption">Administrator</div><h2>{connected ? 'Connected' : 'Disconnected'}</h2><p className="muted small">{connected ? 'Single shared administrator key. Disconnect when finished.' : 'Connect to access persisted history, imports, jobs, delivery evidence and suppressions.'}</p></Card>
       <Card><div className="caption">Evidence model</div><h2>Conservative by design</h2><p className="muted small">An MX record is routing evidence, not proof a mailbox exists. SMTP is disabled on the API.</p></Card>
     </div>
     <div className="split">
