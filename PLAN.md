@@ -1,6 +1,6 @@
 # MailGuard engineering plan
 
-Status: Phase 12 is an isolated, uncommitted single-host deployment candidate on `feature/production-hardening`, based on merged Phase 11 commit `8ca3bf3290be249ef578ee93326d1724fee0a064`. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Public release remains blocked by owner-scoped identity, approved retention/erasure and legal holds, backup encryption/expiry, DNS egress, production TLS and upstream license rights. The owner's two irrelevant MySQL rows remain excluded.
+Status: Phase 12 is a locally verified single-host deployment candidate on `feature/production-hardening`; draft PR preparation and synchronization with latest `origin/main` are separately authorized. PostgreSQL/Flyway V1–V5 own durable history, jobs, imports and delivery evidence; Valkey owns disposable DNS observations and HTTP admission. Public release remains blocked by owner-scoped identity, approved retention/erasure and legal holds, backup encryption/expiry, DNS egress, production TLS and upstream license rights. The owner's two irrelevant MySQL rows remain excluded.
 
 ## Goals and current scope
 
@@ -98,6 +98,8 @@ Phase 11 first-audit remediation (D-037): Align the browser import schema with t
 
 Phase 12 single-host production-hardening candidate (D-038–D-039): build independent `compose.prod.yaml` for loopback-only TLS ingress, non-root private API/headless worker, PostgreSQL authority and authenticated disposable Valkey. Require external secrets, production fail-closed validation/admin credentials, private bounded metrics, separate progress-based worker health, deterministic CI/browser smoke and isolated full-database recovery with schema/content/application-read checks. Keep Flyway V1–V5 unchanged. Five synthetic invalid-address imports at each of 100, 1,000 and 10,000 rows form an optional, rate-paced latency profile; do not claim production throughput from it. Local image scans found zero HIGH/CRITICAL issues after rebuilding patched proxy and API dependencies; hosted CI remains unrun. Public exposure remains blocked by unresolved owner-scoped identity, retention/erasure/legal holds, encryption/backup expiry, upstream license provenance, trusted DNS egress and TLS operator approvals. See [release readiness](docs/RELEASE_READINESS.md) for measured evidence and explicit blocked gates.
 
+Phase 12 live-backend extension (D-040): Keep the existing single-host trust boundary while adding a bounded authenticated PostgreSQL history page. Show durable rows only from `GET /api/email/history`; keep session activity distinct, and mark absent global job/import/event lists and aggregate counters unavailable. Exercise every page against a disposable HTTPS Compose stack, including worker processing, API stop/restart, PostgreSQL retention and proxy credential-log safety. Run current API/proxy vulnerability scans; an older clean report does not clear new advisories. Owner-scoped authorization, approved data lifecycle, outbound DNS policy, trusted TLS and independent hosted CI remain public-release gates.
+
 ## Testing strategy
 
 - JUnit 5 unit tests for syntax, evidence combination, job transitions, bounded retries and idempotency; Mockito only at genuine external boundaries.
@@ -137,3 +139,13 @@ Out of scope for this plan: cloud hosting, automatic outbound email campaigns or
 - [x] Phase 3 bounded intelligence (Phase 8 CSV, Phase 9 delivery/suppression and Phase 10 Valkey cache/limiter merged and verified locally; tenant controls, approved retention and production capacity remain open as release gates).
 - [ ] Phase 4 optional SMTP (local fixture module implemented and disabled by default; no production authorization, external egress, API integration or deployment).
 - [ ] Phase 5 local product (Phase 11 dashboard plus Phase 12 loopback deployment, CI candidate, restore drill and telemetry verified locally; hosted production-smoke gate is red on HEAD `6fe44a9` — Trivy scan failure, Oct 2026 — and public release still blocked by ownership, retention, license provenance and operator DNS/TLS/backup policy; patched local image scans do not constitute approval).
+
+## Current live integration reverification — 2026-11-21
+
+Local real-service verification is complete; public-production approval is not. See [full A–H evidence and endpoint matrix](docs/LIVE_BACKEND_VERIFICATION.md).
+
+- Final generated counts: backend 347 total / 338 passed / nine opt-in skips; frontend units 72/72; development Chromium 9/9; production HTTPS Chromium 9/9; backup boundaries 4/4. The 96 real PostgreSQL/Valkey cases are a subset of the backend count, not additional tests.
+- Disposable project `mailguard-p12-smoke-6875d02e` passed PostgreSQL/API/worker restart persistence, exactly-once job history, worker stall/recovery, eight-table source/restored content hashes and packaged read-only restored import access. Containers stopped without volume deletion.
+- Exercised immutable API/worker and proxy image IDs and filesystem scans returned zero HIGH/CRITICAL findings. Seven MODERATE frontend development dependency findings remain; production-only npm audit found none.
+- CI Java/Docker prerequisites and machine-readable artifacts are configured, but hosted CI has not run. Both Gemini review attempts failed at provider startup with HTTP 404; the independent handoff is prepared, not approved.
+- Original checkout and its six edits were not accessed or rehashed in this pass. This worktree's entry changes were preserved. No commit, push, deployment or public approval.
