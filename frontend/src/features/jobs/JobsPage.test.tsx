@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { useSession } from '../../lib/auth/session'
-import { ApiError } from '../../lib/api/client'
+import { ApiError, createApi } from '../../lib/api/client'
 import JobsPage from './JobsPage'
 
 vi.mock('../../lib/auth/session', () => ({ useSession: vi.fn() }))
@@ -27,7 +27,7 @@ beforeEach(() => {
   trackJob.mockReset()
   vi.mocked(useSession).mockReturnValue({ api: { json, download: vi.fn(), text: vi.fn(), empty: vi.fn() }, connected: true, imports: [], trackImport: vi.fn(), jobs: [], validations: [], trackJob, trackValidation: vi.fn(), connect: vi.fn(), disconnect: vi.fn() })
 })
-afterEach(() => cleanup())
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('jobs', () => {
   it('submits an address once and opens its actual job ID', async () => {
@@ -78,5 +78,51 @@ describe('jobs', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('conflicts')
     expect(await screen.findByText('No MX record')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Cancel job' })).not.toBeInTheDocument()
+  })
+})
+
+describe('job UUID navigation', () => {
+  it.each([
+    '12345678-abcd-0abc-1abc-123456789abc',
+    '12345678-ABCD-0ABC-1ABC-123456789ABC',
+  ])('opens backend-compatible direct job link %s and parses its response', async jobId => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ ...job, id: jobId }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    vi.mocked(useSession).mockReturnValue({ ...vi.mocked(useSession)(), api: createApi('key') })
+    mount(`/jobs/${jobId}`)
+    expect(await screen.findByText('No MX record')).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith(`/api/jobs/${jobId}`, expect.anything())
+  })
+
+  it.each([
+    '12345678-abcd-0abc-1abc-123456789abc',
+    '12345678-ABCD-0ABC-1ABC-123456789ABC',
+  ])('looks up backend-compatible job ID %s', async jobId => {
+    const user = userEvent.setup()
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ ...job, id: jobId }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    vi.mocked(useSession).mockReturnValue({ ...vi.mocked(useSession)(), api: createApi('key') })
+    mount()
+    await user.type(screen.getByLabelText('Job UUID'), ` ${jobId} `)
+    await user.click(screen.getByRole('button', { name: 'Open job' }))
+    expect(await screen.findByText('No MX record')).toBeInTheDocument()
+    expect(trackJob).toHaveBeenCalledWith(jobId)
+    expect(fetcher).toHaveBeenCalledWith(`/api/jobs/${jobId}`, expect.anything())
+  })
+
+  it.each(['1-1-1-1-1', '12345678-abcd-0abc-1abc-123456789abg'])('rejects malformed direct job ID %s before fetching', async jobId => {
+    mount(`/jobs/${jobId}`)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a valid job UUID.')
+    expect(json).not.toHaveBeenCalled()
+  })
+
+  it.each(['1-1-1-1-1', '12345678-abcd-0abc-1abc-123456789abg'])('rejects malformed job lookup %s before fetching', async jobId => {
+    const user = userEvent.setup()
+    mount()
+    await user.type(screen.getByLabelText('Job UUID'), jobId)
+    await user.click(screen.getByRole('button', { name: 'Open job' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a valid job UUID.')
+    expect(trackJob).not.toHaveBeenCalled()
+    expect(json).not.toHaveBeenCalled()
   })
 })

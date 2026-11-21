@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { z } from 'zod'
 import { useNotice } from '../../app/notifications'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorState, Status } from '../../components/ui'
-import { idSchema, importSchema, resultRowSchema } from '../../lib/api/contracts'
+import { idSchema, importSchema, resultRowSchema, uuidSchema } from '../../lib/api/contracts'
 import type { ImportProgress } from '../../lib/api/contracts'
 import { useSession } from '../../lib/auth/session'
 import { displayTime, fileSize, saveDownload } from '../../lib/format'
@@ -181,12 +181,12 @@ export default function BulkPage() {
   function openId(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const cleaned = lookup.trim()
-    if (!z.uuid().safeParse(cleaned).success) { setLookupError('Enter a valid import UUID.'); return }
+    if (!uuidSchema.safeParse(cleaned).success) { setLookupError('Enter a valid import UUID.'); return }
     setLookupError('')
     trackImport(cleaned)
     void navigate(`/bulk/${cleaned}`)
   }
-  if (id) return z.uuid().safeParse(id).success ? <ImportDetail key={id} id={id} /> : <ErrorState error={new ApiError('Enter a valid import UUID.', 400)} />
+  if (id) return uuidSchema.safeParse(id).success ? <ImportDetail key={id} id={id} /> : <ErrorState error={new ApiError('Enter a valid import UUID.', 400)} />
   if (!connected) return <EmptyState title="Administrator access required">Connect an administrator key to upload and view imports.</EmptyState>
   return <div className="space-y-5">
     <h1 className="text-2xl font-bold">Bulk CSV imports</h1>
