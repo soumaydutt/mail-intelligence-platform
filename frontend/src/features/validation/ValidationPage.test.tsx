@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../lib/api/client'
 import type { Validation } from '../../lib/api/contracts'
@@ -25,6 +25,7 @@ function enterAndSubmit(email: string) {
 beforeEach(() => {
   json.mockReset()
   trackValidation.mockReset()
+  session.api = { json }
   session.connected = false
 })
 
@@ -70,6 +71,45 @@ describe('email validation', () => {
     expect(json).toHaveBeenLastCalledWith('/api/email/validate', expect.anything(), expect.objectContaining({ auth: true }))
   })
 
+  it.each(['completion', 'failure'] as const)('ignores duplicate submissions and allows retry after %s', async (outcome) => {
+    const pending = Promise.withResolvers<Validation>()
+    json.mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(unverified)
+    render(<ValidationPage />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Email address' }), { target: { value: 'alice@example.com' } })
+    const button = screen.getByRole('button', { name: 'Validate email' })
+    const form = button.closest('form')!
+
+    await act(async () => {
+      fireEvent.click(button)
+      fireEvent.submit(form)
+      fireEvent.submit(form)
+    })
+    expect(json).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Checking email…' })).toBeDisabled()
+    const signal = json.mock.calls[0]?.[2].signal as AbortSignal
+    await act(async () => {
+      fireEvent.click(button)
+      fireEvent.submit(form)
+    })
+    expect(json).toHaveBeenCalledOnce()
+    expect(signal.aborted).toBe(false)
+
+    await act(async () => {
+      if (outcome === 'completion') pending.resolve(unverified)
+      else pending.reject(new ApiError('Validation unavailable.', 503))
+    })
+    if (outcome === 'completion') {
+      expect(screen.getByText(unverified.message)).toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('Validation unavailable.')
+    }
+    expect(screen.getByRole('button', { name: 'Validate email' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Validate email' }))
+    await waitFor(() => expect(json).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(unverified.message)).toBeInTheDocument()
+    expect(trackValidation).toHaveBeenCalledTimes(outcome === 'completion' ? 2 : 1)
+  })
+
   it('cancels stale results on another submission', async () => {
     const first = Promise.withResolvers<Validation>()
     const second = Promise.withResolvers<Validation>()
@@ -80,15 +120,39 @@ describe('email validation', () => {
     const firstSignal = json.mock.calls[0]?.[2].signal as AbortSignal
     fireEvent.change(screen.getByRole('textbox', { name: 'Email address' }), { target: { value: 'second@example.com' } })
     expect(firstSignal.aborted).toBe(true)
+    expect(screen.getByRole('button', { name: 'Validate email' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Validate email' }))
     await waitFor(() => expect(json).toHaveBeenCalledTimes(2))
     expect(json.mock.calls[1]?.[2].signal).toBeInstanceOf(AbortSignal)
-    first.resolve({ ...unverified, email: 'first@example.com' })
-    await waitFor(() => expect(trackValidation).not.toHaveBeenCalled())
+    await act(async () => { first.resolve({ ...unverified, email: 'first@example.com' }) })
+    expect(trackValidation).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Checking email…' })).toBeDisabled()
     second.resolve({ ...unverified, email: 'second@example.com' })
     expect(await screen.findByText('second@example.com')).toBeInTheDocument()
     expect(screen.queryByText('first@example.com')).not.toBeInTheDocument()
     view.unmount()
+    expect(trackValidation).toHaveBeenCalledOnce()
+  })
+
+  it('aborts pending validation and allows submission when the API changes', async () => {
+    const pending = Promise.withResolvers<Validation>()
+    json.mockImplementationOnce(() => pending.promise)
+    const replacementJson = vi.fn().mockResolvedValue({ ...unverified, message: 'Replacement API result.' })
+    const view = render(<ValidationPage />)
+    enterAndSubmit('alice@example.com')
+    await waitFor(() => expect(json).toHaveBeenCalledOnce())
+    const signal = json.mock.calls[0]?.[2].signal as AbortSignal
+
+    session.api = { json: replacementJson }
+    view.rerender(<ValidationPage />)
+    expect(signal.aborted).toBe(true)
+    expect(screen.getByRole('button', { name: 'Validate email' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Validate email' }))
+    expect(await screen.findByText('Replacement API result.')).toBeInTheDocument()
+    expect(replacementJson).toHaveBeenCalledOnce()
+
+    await act(async () => { pending.resolve(unverified) })
+    expect(screen.queryByText(unverified.message)).not.toBeInTheDocument()
     expect(trackValidation).toHaveBeenCalledOnce()
   })
 

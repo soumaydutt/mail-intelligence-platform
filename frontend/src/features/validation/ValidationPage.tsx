@@ -19,11 +19,14 @@ export default function ValidationPage() {
   const [loading, setLoading] = useState(false)
   const active = useRef<AbortController | null>(null)
 
-  useEffect(() => () => { active.current?.abort(); active.current = null }, [api])
-
-  async function submit({ email }: FormValues) {
+  useEffect(() => () => {
     active.current?.abort()
     active.current = null
+    setLoading(false)
+  }, [api])
+
+  async function submit({ email }: FormValues) {
+    if (active.current) return
     setResult(null)
     setRequestError(null)
     clearErrors('email')
@@ -71,7 +74,7 @@ export default function ValidationPage() {
             } })} />
           {errors.email && <p id="validation-email-error" role="alert">{errors.email.message}</p>}
         </div>
-        <Button type="submit">{loading ? 'Check again' : 'Validate email'}</Button>
+        <Button type="submit" disabled={loading}>{loading ? 'Checking email…' : 'Validate email'}</Button>
         {loading && <p role="status">Checking email…</p>}
       </form>
     </Card>
