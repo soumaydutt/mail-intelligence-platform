@@ -2,6 +2,11 @@
     auto_https off
     admin off
     persist_config off
+    log {
+        format filter {
+            request delete
+        }
+    }
 }
 
 http://:8080 {
