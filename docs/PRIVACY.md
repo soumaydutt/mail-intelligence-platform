@@ -4,7 +4,7 @@ This single-host deployment serves one trusted operator on loopback. It does not
 
 | Location | Data | Persistence | Current control | Unapproved policy |
 | --- | --- | --- | --- | --- |
-| PostgreSQL `email_validation_history` | Full submitted address, DNS/status and timestamp | Durable volume and archives | Production validation requires administrator key; network private | Retention period, access purpose and erasure |
+| PostgreSQL `email_validation_history` | Full submitted address, DNS/status and timestamp | Durable volume and archives | Production validation and bounded newest-first history read require the shared administrator key; network private | Retention period, access purpose, owner scoping and erasure |
 | PostgreSQL jobs and imports | Address, idempotency metadata, result, CSV rows, errors | Durable volume and archives | Shared administrator key; input bounds and formula-safe export | Retention, subject erasure and consent |
 | PostgreSQL evidence and suppression | Address, delivery event and suppression reason | Durable volume and archives | Shared administrator key; audit/revocation paths | Retention, legal hold and erasure |
 | Valkey | HMAC peer bucket keys, disposable DNS answers and quota state | Memory-only; cleared on restart | ACL password, private bridge, bounded memory | DNS egress authorization |
@@ -15,6 +15,8 @@ This single-host deployment serves one trusted operator on loopback. It does not
 No automatic cleanup is enabled: deleting live data without resolving dependent rows, idempotency, audit events, archives and legal holds risks irreversible corruption or false erasure promises. A release owner must approve retention periods, complete deletion semantics, backup rotation/encryption, and subject-access workflow. Until then: prevent public exposure; store any disposable tests only in project-unique volumes, remove only test-owned resources after inspection, and keep production backup archives out of Git. Operators must authorize DNS network egress and certificate provisioning separately. SMTP verification and sending stay disabled in the API.
 
 The shared administrator key grants access to **all** administrative records. Generate a high-entropy random value outside Git; rotate it in the mounted secret file and restart API and worker together. The reverse proxy discards client forwarding headers and binds loopback by default. The backend's public peer quota collapses to the proxy socket; no per-client distributed guarantee is asserted. Wrong-key attempts consume shared Valkey admission before returning 401. A public or multi-operator deployment needs identity, owner-scoped authorization, ingress abuse limits, trusted peer accounting, and a new privacy review.
+
+The history list returns full addresses across all submissions to anyone with that key. Its pagination bounds response size, not the number of records accessible. No public or multi-operator use is approved.
 
 ## Decision matrix for owner approval (no retention rule is active)
 
