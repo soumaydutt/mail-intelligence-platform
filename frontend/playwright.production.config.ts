@@ -11,10 +11,11 @@ if (disposableUrl.protocol !== 'https:' || disposableUrl.hostname !== 'localhost
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: 'production.spec.ts',
+  outputDir: './test-results/production',
   timeout: 90000,
   expect: { timeout: 20000 },
   workers: 1,
-  reporter: 'list',
+  reporter: [['list'], ['junit', { outputFile: '../target/evidence/production-browser.xml' }]],
   use: {
     ...devices['Desktop Chrome'],
     baseURL: process.env.PROD_TEST_BASE_URL,
